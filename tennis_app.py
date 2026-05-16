@@ -7,7 +7,7 @@ from sklearn.ensemble import GradientBoostingClassifier
 
 @st.cache_data
 def load_data():
-    years = range(2015, 2025)
+    years = range(2015, 2027)
     frames = []
     for year in years:
         url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv"
@@ -246,4 +246,4 @@ if st.button("Predict", type="primary"):
             st.write(f"**Momentum** — {p1}: {mom1*100:.1f}% | {p2}: {mom2*100:.1f}%")
             st.write(f"**Fatigue (matches last 2 weeks)** — {p1}: {fat1} | {p2}: {fat2}")
             st.write(f"**Serve score** — {p1}: {sv1*100:.1f}% | {p2}: {sv2*100:.1f}%")
-            st.write(f"**H2H win rate for {p1}**: {h2h*100:.1f}%")
+            st.write(f"**H2H win rate for {p1}**: {h2h*100:.1f}%")2027
