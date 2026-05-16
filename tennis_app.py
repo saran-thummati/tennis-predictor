@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from sklearn.ensemble import GradientBoostingClassifier
 
-@st.cache_data
+@st.cache_data(ttl=86400)
 def load_data():
     years = range(2015, 2027)
     frames = []
@@ -13,7 +13,12 @@ def load_data():
         url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv"
         frames.append(pd.read_csv(url))
     df = pd.concat(frames).sort_values("tourney_date").reset_index(drop=True)
-    return df
+
+    # Remove retirements and walkovers
+    df = df[df["score"].notna()]
+    df = df[~df["score"].str.contains("W/O|RET|DEF", na=False)]
+
+    return df.reset_index(drop=True)
 
 class EloModel:
     def __init__(self, initial_rating=1500):
@@ -79,52 +84,64 @@ def compute_serve_score(player, serve_history, n=10):
 def train_model():
     df = load_data()
 
-    # Tournament level k-factor
+    # K-factor by tournament level
     level_k = {"G": 50, "M": 40, "A": 32, "D": 24, "F": 32}
+
+    # Surface k-factor — less reliable on grass
+    surface_k = {"Hard": 32, "Clay": 32, "Grass": 20, "Carpet": 20}
 
     np.random.seed(42)
     flip = np.random.rand(len(df)) < 0.5
+
     df_clean = pd.DataFrame({
-        "player1":       np.where(flip, df["loser_name"],     df["winner_name"]),
-        "player2":       np.where(flip, df["winner_name"],    df["loser_name"]),
+        "player1":       np.where(flip, df["loser_name"],  df["winner_name"]),
+        "player2":       np.where(flip, df["winner_name"], df["loser_name"]),
         "surface":       df["surface"],
         "tourney_date":  df["tourney_date"],
         "tourney_level": df["tourney_level"],
+        "best_of":       df["best_of"],
         "p1_win":        np.where(flip, 0, 1),
     })
-    df_clean["rank1"] = np.where(flip, df["loser_rank"],  df["winner_rank"])
-    df_clean["rank2"] = np.where(flip, df["winner_rank"], df["loser_rank"])
-
-    # Serve stats — first serve % won
-    df_clean["serve1"] = np.where(flip, df["l_1stWon"] / (df["l_1stIn"] + 1),
-                                        df["w_1stWon"] / (df["w_1stIn"] + 1))
-    df_clean["serve2"] = np.where(flip, df["w_1stWon"] / (df["w_1stIn"] + 1),
-                                        df["l_1stWon"] / (df["l_1stIn"] + 1))
+    df_clean["rank1"]    = np.where(flip, df["loser_rank"],  df["winner_rank"])
+    df_clean["rank2"]    = np.where(flip, df["winner_rank"], df["loser_rank"])
+    df_clean["age1"]     = np.where(flip, df["loser_age"],   df["winner_age"])
+    df_clean["age2"]     = np.where(flip, df["winner_age"],  df["loser_age"])
+    df_clean["serve1"]   = np.where(flip, df["l_1stWon"] / (df["l_1stIn"] + 1),
+                                          df["w_1stWon"] / (df["w_1stIn"] + 1))
+    df_clean["serve2"]   = np.where(flip, df["w_1stWon"] / (df["w_1stIn"] + 1),
+                                          df["l_1stWon"] / (df["l_1stIn"] + 1))
 
     records = []
     model = EloModel()
     match_history = defaultdict(list)
-    match_dates = defaultdict(list)
-    h2h_record = defaultdict(lambda: {"wins_a": 0, "wins_b": 0})
-    serve_history = defaultdict(list)
+    match_dates   = defaultdict(list)
+    h2h_record    = defaultdict(lambda: {"wins_a": 0, "wins_b": 0})
+    serve_history  = defaultdict(list)
 
     for _, row in df_clean.iterrows():
         p1, p2, surface = row["player1"], row["player2"], row["surface"]
         p1_win = row["p1_win"]
-        k = level_k.get(row["tourney_level"], 32)
+
+        level_factor   = level_k.get(row["tourney_level"], 32)
+        surface_factor = surface_k.get(surface, 32)
+        k = (level_factor + surface_factor) / 2
 
         try:
             current_date = datetime.strptime(str(int(row["tourney_date"])), "%Y%m%d")
         except:
             current_date = datetime.today()
 
-        # Snapshot all features BEFORE updating
         r1, r2   = model.get_rating(p1), model.get_rating(p2)
         sr1, sr2 = model.get_rating(p1, surface), model.get_rating(p2, surface)
+
         rank1, rank2 = row.get("rank1", np.nan), row.get("rank2", np.nan)
         rank_diff = rank1 - rank2 if pd.notna(rank1) and pd.notna(rank2) else 0
-        wr1 = compute_recent_win_rate(p1, match_history)
-        wr2 = compute_recent_win_rate(p2, match_history)
+
+        age1, age2 = row.get("age1", np.nan), row.get("age2", np.nan)
+        age_diff = age1 - age2 if pd.notna(age1) and pd.notna(age2) else 0
+
+        wr1  = compute_recent_win_rate(p1, match_history)
+        wr2  = compute_recent_win_rate(p2, match_history)
         mom1 = compute_momentum(p1, match_history)
         mom2 = compute_momentum(p2, match_history)
         fat1 = compute_fatigue(p1, match_dates, current_date)
@@ -132,6 +149,8 @@ def train_model():
         h2h  = compute_h2h(p1, p2, h2h_record)
         sv1  = compute_serve_score(p1, serve_history)
         sv2  = compute_serve_score(p2, serve_history)
+
+        best_of = row.get("best_of", 3)
 
         records.append({
             "elo_diff":         r1 - r2,
@@ -142,11 +161,12 @@ def train_model():
             "fatigue_diff":     fat1 - fat2,
             "h2h_p1":           h2h,
             "serve_diff":       sv1 - sv2,
+            "age_diff":         age_diff,
+            "best_of":          best_of,
             "surface":          surface,
             "p1_win":           p1_win,
         })
 
-        # Update everything AFTER snapshotting
         model.update(p1, p2, p1_win, surface=surface, k=k)
         match_history[p1].append(p1_win)
         match_history[p2].append(1 - p1_win)
@@ -168,21 +188,22 @@ def train_model():
 
     features_df = pd.DataFrame(records)
     feature_cols = ["elo_diff", "surface_elo_diff", "rank_diff", "win_rate_diff",
-                    "momentum_diff", "fatigue_diff", "h2h_p1", "serve_diff"]
+                    "momentum_diff", "fatigue_diff", "h2h_p1", "serve_diff",
+                    "age_diff", "best_of"]
     X = pd.get_dummies(features_df[feature_cols + ["surface"]], columns=["surface"])
     y = features_df["p1_win"]
 
     clf = GradientBoostingClassifier(n_estimators=200, learning_rate=0.05, max_depth=3)
     clf.fit(X, y)
 
-    all_players = sorted(set(df_clean["player1"].tolist() + df_clean["player2"].tolist()))
+    all_players  = sorted(set(df_clean["player1"].tolist() + df_clean["player2"].tolist()))
     all_surfaces = features_df["surface"].unique().tolist()
 
     return model, clf, match_history, match_dates, h2h_record, serve_history, all_players, all_surfaces, X.columns.tolist()
 
 # ---- UI ----
 st.title("🎾 Tennis Match Predictor")
-st.write("Predict the winner of any ATP match using Elo ratings, momentum, fatigue, serve stats and machine learning.")
+st.write("Predicts ATP match winners using Elo, momentum, fatigue, serve stats, age, and tournament level.")
 
 with st.spinner("Training model... this takes ~60 seconds on first load"):
     model, clf, match_history, match_dates, h2h_record, serve_history, all_players, all_surfaces, feature_cols = train_model()
@@ -194,6 +215,7 @@ with col2:
     p2 = st.selectbox("Player 2", all_players, index=1, key="p2")
 
 surface = st.selectbox("Surface", ["Hard", "Clay", "Grass"])
+best_of = st.radio("Best of", [3, 5], horizontal=True)
 
 if st.button("Predict", type="primary"):
     if p1 == p2:
@@ -220,6 +242,8 @@ if st.button("Predict", type="primary"):
             "fatigue_diff":     fat1 - fat2,
             "h2h_p1":           h2h,
             "serve_diff":       sv1 - sv2,
+            "age_diff":         0,
+            "best_of":          best_of,
         }
         for s in all_surfaces:
             row[f"surface_{s}"] = 1 if surface == s else 0
@@ -238,7 +262,6 @@ if st.button("Predict", type="primary"):
         conf = max(prob, 1 - prob) * 100
         st.success(f"Predicted winner: **{winner}** ({conf:.1f}% confidence)")
 
-        # Show breakdown
         with st.expander("See detailed breakdown"):
             st.write(f"**Overall Elo** — {p1}: {r1:.0f} | {p2}: {r2:.0f}")
             st.write(f"**{surface} Elo** — {p1}: {sr1:.0f} | {p2}: {sr2:.0f}")
@@ -247,3 +270,4 @@ if st.button("Predict", type="primary"):
             st.write(f"**Fatigue (matches last 2 weeks)** — {p1}: {fat1} | {p2}: {fat2}")
             st.write(f"**Serve score** — {p1}: {sv1*100:.1f}% | {p2}: {sv2*100:.1f}%")
             st.write(f"**H2H win rate for {p1}**: {h2h*100:.1f}%")
+            st.write(f"**Best of**: {best_of} sets")
