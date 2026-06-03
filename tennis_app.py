@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from collections import defaultdict
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from sklearn.ensemble import GradientBoostingClassifier
 import requests
+import calendar
 
 # ---- Data Loading ----
 @st.cache_data(ttl=86400)
@@ -22,8 +23,8 @@ def load_data():
 @st.cache_data(ttl=3600)
 def fetch_upcoming_matches(api_key):
     today     = datetime.today().strftime("%Y-%m-%d")
-    two_weeks = (datetime.today() + timedelta(days=14)).strftime("%Y-%m-%d")
-    url = f"https://api.api-tennis.com/tennis/?method=get_fixtures&APIkey={api_key}&from={today}&to={two_weeks}&tour_id=2"
+    end_date  = (datetime.today() + timedelta(days=30)).strftime("%Y-%m-%d")
+    url = f"https://api.api-tennis.com/tennis/?method=get_fixtures&APIkey={api_key}&from={today}&to={end_date}&tour_id=2"
     try:
         response = requests.get(url, timeout=10)
         data = response.json()
@@ -80,16 +81,6 @@ def compute_momentum(player, match_history, n=10):
     weights = [i + 1 for i in range(len(matches))]
     return sum(w * m for w, m in zip(weights, matches)) / sum(weights)
 
-def compute_fatigue(player, match_dates, reference_date, days=14):
-    recent = [d for d in match_dates[player] if 0 <= (reference_date - d).days <= days]
-    return len(recent)
-
-def compute_days_rest(player, match_dates, reference_date):
-    past = [d for d in match_dates[player] if d < reference_date]
-    if not past:
-        return 30
-    return (reference_date - max(past)).days
-
 def compute_h2h(p1, p2, h2h_record):
     key = tuple(sorted([p1, p2]))
     record = h2h_record[key]
@@ -139,15 +130,19 @@ def round_to_num(round_str):
     mapping = {"R128": 1, "R64": 2, "R32": 3, "R16": 4, "QF": 5, "SF": 6, "F": 7, "RR": 3}
     return mapping.get(str(round_str), 3)
 
+def implied_prob(odds):
+    """Convert American odds to implied probability."""
+    if odds > 0:
+        return 100 / (odds + 100)
+    else:
+        return abs(odds) / (abs(odds) + 100)
+
 def get_prediction(p1, p2, surface, best_of, round_num, tourney,
+                   p1_fatigue, p2_fatigue, p1_rest, p2_rest,
                    model, clf, feature_cols, match_history, surface_history,
-                   match_dates, h2h_record, h2h_surface, serve_history,
-                   ace_history, df_history, bp_history, upset_history,
-                   rank_history, tourney_history, all_surfaces,
-                   ref1=None, ref2=None):
-    today = datetime.today()
-    ref1  = ref1 or today
-    ref2  = ref2 or today
+                   h2h_record, h2h_surface, serve_history, ace_history,
+                   df_history, bp_history, upset_history, rank_history,
+                   tourney_history, all_surfaces):
 
     r1, r2   = model.get_rating(p1), model.get_rating(p2)
     sr1, sr2 = model.get_rating(p1, surface), model.get_rating(p2, surface)
@@ -157,10 +152,6 @@ def get_prediction(p1, p2, surface, best_of, round_num, tourney,
     swr2  = compute_surface_win_rate(p2, surface, surface_history)
     mom1  = compute_momentum(p1, match_history)
     mom2  = compute_momentum(p2, match_history)
-    fat1  = compute_fatigue(p1, match_dates, ref1)
-    fat2  = compute_fatigue(p2, match_dates, ref2)
-    rest1 = compute_days_rest(p1, match_dates, ref1)
-    rest2 = compute_days_rest(p2, match_dates, ref2)
     h2h   = compute_h2h(p1, p2, h2h_record)
     sh2h  = compute_surface_h2h(p1, p2, surface, h2h_surface)
     sv1   = compute_serve_score(p1, serve_history)
@@ -186,8 +177,8 @@ def get_prediction(p1, p2, surface, best_of, round_num, tourney,
         "win_rate_diff":         wr1 - wr2,
         "surface_win_rate_diff": swr1 - swr2,
         "momentum_diff":         mom1 - mom2,
-        "fatigue_diff":          fat1 - fat2,
-        "rest_diff":             rest1 - rest2,
+        "fatigue_diff":          p1_fatigue - p2_fatigue,
+        "rest_diff":             p1_rest - p2_rest,
         "h2h_p1":                h2h,
         "surface_h2h_p1":        sh2h,
         "serve_diff":            sv1 - sv2,
@@ -205,7 +196,7 @@ def get_prediction(p1, p2, surface, best_of, round_num, tourney,
 
     input_df = pd.DataFrame([row])[feature_cols]
     prob     = clf.predict_proba(input_df)[0][1]
-    return prob, r1, r2, sr1, sr2, wr1, wr2, fat1, fat2, rest1, rest2, h2h, sh2h
+    return prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, mom1, mom2, sv1, sv2
 
 # ---- Train Model ----
 @st.cache_resource
@@ -289,33 +280,30 @@ def train_model():
         age2      = row.get("age2", np.nan)
         age_diff  = age1 - age2 if pd.notna(age1) and pd.notna(age2) else 0
 
-        wr1   = compute_recent_win_rate(p1, match_history)
-        wr2   = compute_recent_win_rate(p2, match_history)
-        swr1  = compute_surface_win_rate(p1, surface, surface_history)
-        swr2  = compute_surface_win_rate(p2, surface, surface_history)
-        mom1  = compute_momentum(p1, match_history)
-        mom2  = compute_momentum(p2, match_history)
-        fat1  = compute_fatigue(p1, match_dates, current_date)
-        fat2  = compute_fatigue(p2, match_dates, current_date)
-        rest1 = compute_days_rest(p1, match_dates, current_date)
-        rest2 = compute_days_rest(p2, match_dates, current_date)
-        h2h   = compute_h2h(p1, p2, h2h_record)
-        sh2h  = compute_surface_h2h(p1, p2, surface, h2h_surface)
-        sv1   = compute_serve_score(p1, serve_history)
-        sv2   = compute_serve_score(p2, serve_history)
-        ac1   = compute_serve_score(p1, ace_history)
-        ac2   = compute_serve_score(p2, ace_history)
-        df1   = compute_serve_score(p1, df_history)
-        df2   = compute_serve_score(p2, df_history)
-        bp1   = compute_serve_score(p1, bp_history)
-        bp2   = compute_serve_score(p2, bp_history)
-        up1   = compute_upset_rate(p1, upset_history)
-        up2   = compute_upset_rate(p2, upset_history)
-        rt1   = compute_rank_trajectory(p1, rank_history)
-        rt2   = compute_rank_trajectory(p2, rank_history)
-        tw1   = compute_tournament_win_rate(p1, tourney, tourney_history)
-        tw2   = compute_tournament_win_rate(p2, tourney, tourney_history)
+        wr1  = compute_recent_win_rate(p1, match_history)
+        wr2  = compute_recent_win_rate(p2, match_history)
+        swr1 = compute_surface_win_rate(p1, surface, surface_history)
+        swr2 = compute_surface_win_rate(p2, surface, surface_history)
+        mom1 = compute_momentum(p1, match_history)
+        mom2 = compute_momentum(p2, match_history)
+        h2h  = compute_h2h(p1, p2, h2h_record)
+        sh2h = compute_surface_h2h(p1, p2, surface, h2h_surface)
+        sv1  = compute_serve_score(p1, serve_history)
+        sv2  = compute_serve_score(p2, serve_history)
+        ac1  = compute_serve_score(p1, ace_history)
+        ac2  = compute_serve_score(p2, ace_history)
+        df1  = compute_serve_score(p1, df_history)
+        df2  = compute_serve_score(p2, df_history)
+        bp1  = compute_serve_score(p1, bp_history)
+        bp2  = compute_serve_score(p2, bp_history)
+        up1  = compute_upset_rate(p1, upset_history)
+        up2  = compute_upset_rate(p2, upset_history)
+        rt1  = compute_rank_trajectory(p1, rank_history)
+        rt2  = compute_rank_trajectory(p2, rank_history)
+        tw1  = compute_tournament_win_rate(p1, tourney, tourney_history)
+        tw2  = compute_tournament_win_rate(p2, tourney, tourney_history)
 
+        # Use 0 for fatigue/rest during training since we use manual input at prediction
         records.append({
             "elo_diff":              r1 - r2,
             "surface_elo_diff":      sr1 - sr2,
@@ -324,8 +312,8 @@ def train_model():
             "win_rate_diff":         wr1 - wr2,
             "surface_win_rate_diff": swr1 - swr2,
             "momentum_diff":         mom1 - mom2,
-            "fatigue_diff":          fat1 - fat2,
-            "rest_diff":             rest1 - rest2,
+            "fatigue_diff":          0,
+            "rest_diff":             0,
             "h2h_p1":                h2h,
             "surface_h2h_p1":        sh2h,
             "serve_diff":            sv1 - sv2,
@@ -428,9 +416,9 @@ with st.spinner("Training model... ~90 seconds on first load"):
      tourney_history, all_players, all_surfaces, all_tourneys,
      feature_cols) = train_model()
 
-tab1, tab2 = st.tabs(["🔮 Predict Match", "📅 Upcoming Matches"])
+tab1, tab2, tab3 = st.tabs(["🔮 Predict Match", "📅 Match Calendar", "📊 Odds Comparison"])
 
-# ---- TAB 1: Predict Match ----
+# ======== TAB 1: Predict Match ========
 with tab1:
     st.subheader("Predict a Match")
 
@@ -446,26 +434,28 @@ with tab1:
     round_num = st.select_slider("Round", options=[1,2,3,4,5,6,7],
                                   format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1])
 
-    st.subheader("Last match dates (improves fatigue accuracy)")
+    st.subheader("Fatigue & Rest (enter manually for accuracy)")
     col1, col2 = st.columns(2)
     with col1:
-        p1_last = st.date_input(f"{p1} last played", value=None, key="p1_date")
+        st.write(f"**{p1}**")
+        p1_fatigue = st.number_input(f"Matches played in last 14 days", min_value=0, max_value=15, value=0, key="fat1")
+        p1_rest    = st.number_input(f"Days since last match", min_value=0, max_value=365, value=3, key="rest1")
     with col2:
-        p2_last = st.date_input(f"{p2} last played", value=None, key="p2_date")
+        st.write(f"**{p2}**")
+        p2_fatigue = st.number_input(f"Matches played in last 14 days", min_value=0, max_value=15, value=0, key="fat2")
+        p2_rest    = st.number_input(f"Days since last match", min_value=0, max_value=365, value=3, key="rest2")
 
     if st.button("Predict", type="primary"):
         if p1 == p2:
             st.error("Please select two different players.")
         else:
-            ref1 = datetime.combine(p1_last, datetime.min.time()) if p1_last else datetime.today()
-            ref2 = datetime.combine(p2_last, datetime.min.time()) if p2_last else datetime.today()
-
-            prob, r1, r2, sr1, sr2, wr1, wr2, fat1, fat2, rest1, rest2, h2h, sh2h = get_prediction(
+            prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, mom1, mom2, sv1, sv2 = get_prediction(
                 p1, p2, surface, best_of, round_num, tourney,
+                p1_fatigue, p2_fatigue, p1_rest, p2_rest,
                 model, clf, feature_cols, match_history, surface_history,
-                match_dates, h2h_record, h2h_surface, serve_history,
-                ace_history, df_history, bp_history, upset_history,
-                rank_history, tourney_history, all_surfaces, ref1, ref2
+                h2h_record, h2h_surface, serve_history, ace_history,
+                df_history, bp_history, upset_history, rank_history,
+                tourney_history, all_surfaces
             )
 
             st.divider()
@@ -486,36 +476,108 @@ with tab1:
                     st.write(f"Overall Elo: {r1:.0f}")
                     st.write(f"{surface} Elo: {sr1:.0f}")
                     st.write(f"Recent win rate: {wr1*100:.1f}%")
-                    st.write(f"Fatigue: {fat1} matches in 2 weeks")
-                    st.write(f"Days rest: {rest1}")
+                    st.write(f"Momentum: {mom1*100:.1f}%")
+                    st.write(f"Serve %: {sv1*100:.1f}%")
+                    st.write(f"Fatigue: {p1_fatigue} matches in 2 weeks")
+                    st.write(f"Days rest: {p1_rest}")
                 with col2:
                     st.write(f"**{p2}**")
                     st.write(f"Overall Elo: {r2:.0f}")
                     st.write(f"{surface} Elo: {sr2:.0f}")
                     st.write(f"Recent win rate: {wr2*100:.1f}%")
-                    st.write(f"Fatigue: {fat2} matches in 2 weeks")
-                    st.write(f"Days rest: {rest2}")
+                    st.write(f"Momentum: {mom2*100:.1f}%")
+                    st.write(f"Serve %: {sv2*100:.1f}%")
+                    st.write(f"Fatigue: {p2_fatigue} matches in 2 weeks")
+                    st.write(f"Days rest: {p2_rest}")
                 st.write(f"**Overall H2H for {p1}**: {h2h*100:.1f}%")
                 st.write(f"**{surface} H2H for {p1}**: {sh2h*100:.1f}%")
 
-# ---- TAB 2: Upcoming Matches ----
+# ======== TAB 2: Match Calendar ========
 with tab2:
-    st.subheader("Upcoming ATP Matches — Next 2 Weeks")
+    st.subheader("📅 Upcoming ATP Matches — Next 30 Days")
 
     api_key = st.secrets.get("TENNIS_API_KEY", "")
     if not api_key:
-        api_key = st.text_input("Enter your api-tennis.com API key", type="password")
+        api_key = st.text_input("Enter your api-tennis.com API key", type="password", key="api_key_cal")
 
     if not api_key:
-        st.info("Enter your API key from api-tennis.com to see upcoming matches and predictions.")
+        st.info("Enter your API key from api-tennis.com to see the match calendar.")
+
+        # Manual match entry fallback
+        st.subheader("Or add matches manually")
+        st.write("Add upcoming matches you want to track:")
+
+        if "manual_matches" not in st.session_state:
+            st.session_state.manual_matches = []
+
+        with st.form("add_match"):
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                m_date = st.date_input("Date")
+            with c2:
+                m_p1 = st.selectbox("Player 1", all_players, key="m_p1")
+            with c3:
+                m_p2 = st.selectbox("Player 2", all_players, index=1, key="m_p2")
+            with c4:
+                m_surface = st.selectbox("Surface", ["Hard", "Clay", "Grass"], key="m_surf")
+            m_tourney = st.text_input("Tournament name")
+            m_best_of = st.radio("Best of", [3, 5], horizontal=True, key="m_bo")
+            submitted = st.form_submit_button("Add Match")
+            if submitted and m_p1 != m_p2:
+                st.session_state.manual_matches.append({
+                    "date":    m_date,
+                    "player1": m_p1,
+                    "player2": m_p2,
+                    "surface": m_surface,
+                    "tourney": m_tourney or "Unknown",
+                    "best_of": m_best_of,
+                })
+
+        if st.session_state.manual_matches:
+            # Group by date
+            by_date = defaultdict(list)
+            for m in st.session_state.manual_matches:
+                by_date[m["date"]].append(m)
+
+            for match_date in sorted(by_date.keys()):
+                st.markdown(f"### 📆 {match_date.strftime('%A, %B %d %Y')}")
+                for m in by_date[match_date]:
+                    prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, mom1, mom2, sv1, sv2 = get_prediction(
+                        m["player1"], m["player2"], m["surface"],
+                        m["best_of"], 3, m["tourney"],
+                        0, 0, 3, 3,
+                        model, clf, feature_cols, match_history, surface_history,
+                        h2h_record, h2h_surface, serve_history, ace_history,
+                        df_history, bp_history, upset_history, rank_history,
+                        tourney_history, all_surfaces
+                    )
+                    winner = m["player1"] if prob > 0.5 else m["player2"]
+                    conf   = max(prob, 1-prob) * 100
+                    with st.container():
+                        c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
+                        with c1:
+                            st.write(f"🎾 **{m['player1']}** vs **{m['player2']}**")
+                            st.caption(f"{m['tourney']} | {m['surface']}")
+                        with c2:
+                            st.write(f"{m['player1']}: **{prob*100:.1f}%**")
+                            st.write(f"{m['player2']}: **{(1-prob)*100:.1f}%**")
+                        with c3:
+                            st.write(f"🏆 **{winner}**")
+                        with c4:
+                            st.write(f"Confidence: {conf:.1f}%")
+                        st.divider()
+
+            if st.button("Clear all matches"):
+                st.session_state.manual_matches = []
+                st.rerun()
     else:
         with st.spinner("Fetching upcoming matches..."):
             matches = fetch_upcoming_matches(api_key)
 
         if not matches:
-            st.warning("No upcoming matches found. The API may not have data yet for the next 2 weeks.")
+            st.warning("No upcoming matches found from the API.")
         else:
-            results = []
+            by_date = defaultdict(list)
             for m in matches:
                 try:
                     p1_name = m.get("event_first_player", "")
@@ -527,40 +589,121 @@ with tab2:
                     if not p1_name or not p2_name:
                         continue
 
-                    # Match names to our player list
                     p1_match = next((p for p in all_players if p1_name.split()[-1].lower() in p.lower()), None)
                     p2_match = next((p for p in all_players if p2_name.split()[-1].lower() in p.lower()), None)
 
                     if not p1_match or not p2_match or p1_match == p2_match:
                         continue
 
-                    prob, r1, r2, sr1, sr2, wr1, wr2, fat1, fat2, rest1, rest2, h2h, sh2h = get_prediction(
-                        p1_match, p2_match, surface, 3, 3, tourney,
-                        model, clf, feature_cols, match_history, surface_history,
-                        match_dates, h2h_record, h2h_surface, serve_history,
-                        ace_history, df_history, bp_history, upset_history,
-                        rank_history, tourney_history, all_surfaces
-                    )
-
-                    winner = p1_match if prob > 0.5 else p2_match
-                    conf   = max(prob, 1-prob) * 100
-
-                    results.append({
-                        "Date":       match_date,
-                        "Tournament": tourney,
-                        "Player 1":   p1_match,
-                        "Player 2":   p2_match,
-                        "Surface":    surface,
-                        "P1 Win %":   f"{prob*100:.1f}%",
-                        "P2 Win %":   f"{(1-prob)*100:.1f}%",
-                        "Predicted":  winner,
-                        "Confidence": f"{conf:.1f}%",
+                    by_date[match_date].append({
+                        "player1": p1_match,
+                        "player2": p2_match,
+                        "surface": surface,
+                        "tourney": tourney,
                     })
                 except:
                     continue
 
-            if results:
-                st.dataframe(pd.DataFrame(results), use_container_width=True)
-                st.caption(f"Showing predictions for {len(results)} upcoming matches")
+            for match_date in sorted(by_date.keys()):
+                try:
+                    date_obj = datetime.strptime(match_date, "%Y-%m-%d")
+                    st.markdown(f"### 📆 {date_obj.strftime('%A, %B %d %Y')}")
+                except:
+                    st.markdown(f"### 📆 {match_date}")
+
+                for m in by_date[match_date]:
+                    prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, mom1, mom2, sv1, sv2 = get_prediction(
+                        m["player1"], m["player2"], m["surface"], 3, 3, m["tourney"],
+                        0, 0, 3, 3,
+                        model, clf, feature_cols, match_history, surface_history,
+                        h2h_record, h2h_surface, serve_history, ace_history,
+                        df_history, bp_history, upset_history, rank_history,
+                        tourney_history, all_surfaces
+                    )
+                    winner = m["player1"] if prob > 0.5 else m["player2"]
+                    conf   = max(prob, 1-prob) * 100
+                    c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
+                    with c1:
+                        st.write(f"🎾 **{m['player1']}** vs **{m['player2']}**")
+                        st.caption(f"{m['tourney']} | {m['surface']}")
+                    with c2:
+                        st.write(f"{m['player1']}: **{prob*100:.1f}%**")
+                        st.write(f"{m['player2']}: **{(1-prob)*100:.1f}%**")
+                    with c3:
+                        st.write(f"🏆 **{winner}**")
+                    with c4:
+                        st.write(f"Confidence: {conf:.1f}%")
+                    st.divider()
+
+# ======== TAB 3: Odds Comparison ========
+with tab3:
+    st.subheader("📊 Odds Comparison — Find Value Bets")
+    st.write("Enter the Vegas odds to see if your model disagrees and where the value is.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        op1 = st.selectbox("Player 1", all_players, index=0, key="op1")
+    with col2:
+        op2 = st.selectbox("Player 2", all_players, index=1, key="op2")
+
+    osurface  = st.selectbox("Surface", ["Hard", "Clay", "Grass"], key="osurf")
+    obest_of  = st.radio("Best of", [3, 5], horizontal=True, key="obo")
+    oround    = st.select_slider("Round", options=[1,2,3,4,5,6,7],
+                                  format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1],
+                                  key="oround")
+
+    st.subheader("Vegas Odds (American format)")
+    col1, col2 = st.columns(2)
+    with col1:
+        odds1 = st.number_input(f"{op1} odds (e.g. -150 or +120)", value=-150, key="odds1")
+    with col2:
+        odds2 = st.number_input(f"{op2} odds (e.g. -150 or +120)", value=120, key="odds2")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        of1 = st.number_input("Matches in last 14 days", min_value=0, max_value=15, value=0, key="of1")
+        or1 = st.number_input("Days since last match", min_value=0, max_value=365, value=3, key="or1")
+    with col2:
+        of2 = st.number_input("Matches in last 14 days", min_value=0, max_value=15, value=0, key="of2")
+        or2 = st.number_input("Days since last match", min_value=0, max_value=365, value=3, key="or2")
+
+    if st.button("Compare", type="primary"):
+        if op1 == op2:
+            st.error("Please select two different players.")
+        else:
+            prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, mom1, mom2, sv1, sv2 = get_prediction(
+                op1, op2, osurface, obest_of, oround, "Unknown",
+                of1, of2, or1, or2,
+                model, clf, feature_cols, match_history, surface_history,
+                h2h_record, h2h_surface, serve_history, ace_history,
+                df_history, bp_history, upset_history, rank_history,
+                tourney_history, all_surfaces
+            )
+
+            imp1 = implied_prob(odds1)
+            imp2 = implied_prob(odds2)
+
+            st.divider()
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(op1, f"Model: {prob*100:.1f}%", delta=f"Vegas: {imp1*100:.1f}%")
+            with col2:
+                st.metric(op2, f"Model: {(1-prob)*100:.1f}%", delta=f"Vegas: {imp2*100:.1f}%")
+
+            diff1 = prob - imp1
+            diff2 = (1-prob) - imp2
+
+            st.divider()
+            if abs(diff1) > 0.05 or abs(diff2) > 0.05:
+                st.subheader("⚡ Value Detected")
+                if diff1 > 0.05:
+                    st.success(f"**{op1}** looks undervalued — model gives {prob*100:.1f}% but Vegas implies {imp1*100:.1f}%. Edge: +{diff1*100:.1f}%")
+                if diff2 > 0.05:
+                    st.success(f"**{op2}** looks undervalued — model gives {(1-prob)*100:.1f}% but Vegas implies {imp2*100:.1f}%. Edge: +{diff2*100:.1f}%")
+                if diff1 < -0.05:
+                    st.warning(f"**{op1}** looks overvalued — model gives {prob*100:.1f}% but Vegas implies {imp1*100:.1f}%")
+                if diff2 < -0.05:
+                    st.warning(f"**{op2}** looks overvalued — model gives {(1-prob)*100:.1f}% but Vegas implies {imp2*100:.1f}%")
             else:
-                st.warning("Could not match upcoming players to our database. Player names may differ slightly.")
+                st.info("No significant edge detected — your model and Vegas are in agreement on this match.")
+                
