@@ -480,13 +480,18 @@ with tab1:
                                   format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1])
 
     st.subheader("Conditions")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        temp   = st.selectbox("Temperature", ["Mild", "Hot (30°C+)", "Cold"])
-    with col2:
-        wind   = st.selectbox("Wind", ["Calm", "Windy"])
-    with col3:
-        indoor = st.selectbox("Venue", ["Outdoor", "Indoor"])
+col1, col2, col3 = st.columns(3)
+with col1:
+    temp_val = st.number_input("Temperature (°C)", min_value=-10, max_value=50, value=20)
+    temp     = "Hot (30°C+)" if temp_val >= 30 else ("Cold" if temp_val <= 10 else "Mild")
+    st.caption(f"Classified as: {temp}")
+with col2:
+    wind_val = st.number_input("Wind speed (km/h)", min_value=0, max_value=100, value=10)
+    wind     = "Windy" if wind_val >= 25 else "Calm"
+    st.caption(f"Classified as: {wind}")
+with col3:
+    indoor = st.selectbox("Venue", ["Outdoor", "Indoor"])
+    
 
     st.subheader("Fatigue & Rest")
     col1, col2 = st.columns(2)
