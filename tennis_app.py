@@ -3,13 +3,12 @@ import pandas as pd
 import numpy as np
 from collections import defaultdict
 from datetime import datetime, timedelta
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, VotingClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import TimeSeriesSplit
 import requests
 
 # ---- Data Loading ----
@@ -39,24 +38,23 @@ def fetch_upcoming_matches(api_key):
     except:
         return []
 
-# ---- EloModel with decay ----
+# ---- EloModel ----
 class EloModel:
-    def __init__(self, initial_rating=1500, decay=0.999):
-        self.initial_rating = initial_rating
-        self.decay          = decay
-        self.ratings        = {}
+    def __init__(self, initial_rating=1500):
+        self.initial_rating  = initial_rating
+        self.ratings         = {}
         self.surface_ratings = {}
-        self.match_counts   = defaultdict(int)
+        self.match_counts    = defaultdict(int)
 
     def get_rating(self, player, surface=None):
         base = self.initial_rating
         if surface:
             raw = self.surface_ratings.setdefault(surface, {}).get(player, base)
-            n   = self.match_counts[player]
-            return base + (raw - base) * (self.decay ** max(0, 50 - n))
-        raw = self.ratings.get(player, base)
-        n   = self.match_counts[player]
-        return base + (raw - base) * (self.decay ** max(0, 50 - n))
+        else:
+            raw = self.ratings.get(player, base)
+        n = self.match_counts[player]
+        decay = 0.999 ** max(0, 50 - n)
+        return base + (raw - base) * decay
 
     def expected_score(self, r1, r2):
         return 1 / (1 + 10 ** ((r2 - r1) / 400))
@@ -151,8 +149,7 @@ def compute_recent_h2h(p1, p2, h2h_recent, n=5):
     matches = h2h_recent[key][-n:]
     if not matches:
         return 0.5
-    p1_wins = sum(1 for m in matches if m["winner"] == p1)
-    return p1_wins / len(matches)
+    return sum(1 for m in matches if m["winner"] == p1) / len(matches)
 
 def compute_serve_score(player, serve_history, n=10):
     recent = serve_history[player][-n:]
@@ -179,23 +176,31 @@ def compute_tournament_win_rate(player, tourney, tourney_history):
         return 0.5
     return sum(matches) / len(matches)
 
-def apply_conditions_adjustment(prob, temp_val, wind_val):
+def parse_score(score_str):
+    try:
+        sets    = str(score_str).split()
+        w_games = l_games = 0
+        for s in sets:
+            parts = s.replace("(", " ").replace(")", "").split("-")
+            if len(parts) >= 2:
+                w_games += int(parts[0])
+                l_games += int(parts[1].split()[0])
+        total = w_games + l_games
+        return w_games / total if total > 0 else 0.5
+    except:
+        return 0.5
+
+def apply_adjustments(prob, p1_injured, p2_injured, str1, str2, temp_val, wind_val):
+    if p1_injured and not p2_injured:
+        prob = prob * 0.75
+    elif p2_injured and not p1_injured:
+        prob = prob + (1 - prob) * 0.25
+    prob = max(0.05, min(0.95, prob + (str1 - str2) * 0.005))
     if temp_val >= 30:
         prob = prob * 0.97 + 0.03 * 0.5
     if wind_val >= 25:
         prob = prob * 0.95 + 0.05 * 0.5
     return prob
-
-def apply_injury_adjustment(prob, p1_injured, p2_injured):
-    if p1_injured and not p2_injured:
-        prob = prob * 0.75
-    elif p2_injured and not p1_injured:
-        prob = prob + (1 - prob) * 0.25
-    return prob
-
-def apply_streak_adjustment(prob, streak1, streak2):
-    diff = streak1 - streak2
-    return max(0.05, min(0.95, prob + diff * 0.005))
 
 def round_to_num(round_str):
     mapping = {"R128": 1, "R64": 2, "R32": 3, "R16": 4, "QF": 5, "SF": 6, "F": 7, "RR": 3}
@@ -213,29 +218,17 @@ def confidence_tier(conf):
         return "🟡 Medium"
     return "🔴 Low"
 
-def parse_score(score_str):
-    try:
-        sets   = str(score_str).split()
-        w_games = l_games = 0
-        for s in sets:
-            parts = s.replace("(", " ").replace(")", "").split("-")
-            if len(parts) >= 2:
-                w_games += int(parts[0])
-                l_games += int(parts[1].split()[0])
-        total = w_games + l_games
-        return w_games / total if total > 0 else 0.5
-    except:
-        return 0.5
+PT_LABELS = {0: "Big Server", 1: "Grinder", 2: "All-Courter", 3: "Upset Specialist"}
 
-def get_prediction(p1, p2, surface, best_of, round_num, tourney,
-                   p1_fatigue, p2_fatigue, p1_rest, p2_rest,
-                   p1_injured, p2_injured, temp_val, wind_val, indoor,
-                   model_elo, clfs, feature_cols, scaler,
-                   match_history, surface_history, h2h_record, h2h_surface,
-                   h2h_recent, serve_history, ace_history, df_history,
-                   bp_history, upset_history, rank_history, tourney_history,
-                   round_history, dominance_history, tb_history,
-                   player_types, all_surfaces):
+def build_row(p1, p2, surface, best_of, round_num, tourney,
+              p1_fatigue, p2_fatigue, p1_rest, p2_rest,
+              indoor, temp_val, wind_val,
+              model_elo, match_history, surface_history,
+              h2h_record, h2h_surface, h2h_recent,
+              serve_history, ace_history, df_history, bp_history,
+              upset_history, rank_history, tourney_history,
+              round_history, dominance_history, tb_history,
+              player_types, all_surfaces):
 
     r1, r2   = model_elo.get_rating(p1), model_elo.get_rating(p2)
     sr1, sr2 = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
@@ -307,32 +300,61 @@ def get_prediction(p1, p2, surface, best_of, round_num, tourney,
     for s in all_surfaces:
         row[f"surface_{s}"] = 1 if surface == s else 0
 
+    stats = {
+        "r1": r1, "r2": r2, "sr1": sr1, "sr2": sr2,
+        "wr1": wr1, "wr2": wr2, "swr1": swr1, "swr2": swr2,
+        "mom1": mom1, "mom2": mom2, "str1": str1, "str2": str2,
+        "dom1": dom1, "dom2": dom2, "tb1": tb1, "tb2": tb2,
+        "rwr1": rwr1, "rwr2": rwr2, "h2h": h2h, "sh2h": sh2h,
+        "rh2h": rh2h, "sv1": sv1, "sv2": sv2, "ac1": ac1, "ac2": ac2,
+        "up1": up1, "up2": up2, "pt1": pt1, "pt2": pt2,
+    }
+    return row, stats
+
+def get_prediction(p1, p2, surface, best_of, round_num, tourney,
+                   p1_fatigue, p2_fatigue, p1_rest, p2_rest,
+                   p1_injured, p2_injured, temp_val, wind_val, indoor,
+                   model_elo, clfs, feature_cols, scaler,
+                   match_history, surface_history, h2h_record, h2h_surface,
+                   h2h_recent, serve_history, ace_history, df_history,
+                   bp_history, upset_history, rank_history, tourney_history,
+                   round_history, dominance_history, tb_history,
+                   player_types, all_surfaces):
+
+    row, stats = build_row(
+        p1, p2, surface, best_of, round_num, tourney,
+        p1_fatigue, p2_fatigue, p1_rest, p2_rest,
+        indoor, temp_val, wind_val,
+        model_elo, match_history, surface_history,
+        h2h_record, h2h_surface, h2h_recent,
+        serve_history, ace_history, df_history, bp_history,
+        upset_history, rank_history, tourney_history,
+        round_history, dominance_history, tb_history,
+        player_types, all_surfaces
+    )
+
     input_df = pd.DataFrame([row])[feature_cols]
     input_sc = scaler.transform(input_df)
 
-    # Ensemble: average predictions from all models
     probs = []
-    for name, clf_model in clfs.items():
-        try:
-            if name == "surface":
-                p = clf_model.get(surface, clf_model.get("Hard"))
-                if p:
-                    probs.append(p.predict_proba(input_df)[0][1])
-            elif name in ["mlp"]:
-                probs.append(clf_model.predict_proba(input_sc)[0][1])
-            else:
-                probs.append(clf_model.predict_proba(input_df)[0][1])
-        except:
-            pass
+    try: probs.append(clfs["gb"].predict_proba(input_df)[0][1])
+    except: pass
+    try: probs.append(clfs["rf"].predict_proba(input_df)[0][1])
+    except: pass
+    try: probs.append(clfs["lr"].predict_proba(input_sc)[0][1])
+    except: pass
+    try: probs.append(clfs["mlp"].predict_proba(input_sc)[0][1])
+    except: pass
+    try:
+        sm = clfs["surface"].get(surface)
+        if sm:
+            probs.append(sm.predict_proba(input_df)[0][1])
+    except: pass
 
     prob = np.mean(probs) if probs else 0.5
-    prob = apply_injury_adjustment(prob, p1_injured, p2_injured)
-    prob = apply_streak_adjustment(prob, str1, str2)
-    prob = apply_conditions_adjustment(prob, temp_val, wind_val)
-
-    return (prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, rh2h,
-            mom1, mom2, sv1, sv2, str1, str2, rwr1, rwr2,
-            dom1, dom2, tb1, tb2)
+    prob = apply_adjustments(prob, p1_injured, p2_injured,
+                             stats["str1"], stats["str2"], temp_val, wind_val)
+    return prob, stats
 
 # ---- Train Model ----
 @st.cache_resource
@@ -402,16 +424,6 @@ def train_model():
         age2     = row.get("age2", np.nan)
         age_diff = age1 - age2 if pd.notna(age1) and pd.notna(age2) else 0
 
-        str1 = compute_streak(p1, match_history)
-        str2 = compute_streak(p2, match_history)
-        dom1 = compute_dominance(p1, dominance_history)
-        dom2 = compute_dominance(p2, dominance_history)
-        tb1  = compute_tiebreak_rate(p1, tb_history)
-        tb2  = compute_tiebreak_rate(p2, tb_history)
-        rwr1 = compute_round_win_rate(p1, round_history, rnd)
-        rwr2 = compute_round_win_rate(p2, round_history, rnd)
-        rh2h = compute_recent_h2h(p1, p2, h2h_recent)
-
         records.append({
             "elo_diff":              r1 - r2,
             "surface_elo_diff":      sr1 - sr2,
@@ -424,7 +436,7 @@ def train_model():
             "rest_diff":             0,
             "h2h_p1":                compute_h2h(p1, p2, h2h_record),
             "surface_h2h_p1":        compute_surface_h2h(p1, p2, surface, h2h_surface),
-            "recent_h2h_p1":         rh2h,
+            "recent_h2h_p1":         compute_recent_h2h(p1, p2, h2h_recent),
             "serve_diff":            compute_serve_score(p1, serve_history) - compute_serve_score(p2, serve_history),
             "ace_diff":              compute_serve_score(p1, ace_history) - compute_serve_score(p2, ace_history),
             "df_diff":               compute_serve_score(p1, df_history) - compute_serve_score(p2, df_history),
@@ -432,10 +444,10 @@ def train_model():
             "upset_diff":            compute_upset_rate(p1, upset_history) - compute_upset_rate(p2, upset_history),
             "rank_traj_diff":        compute_rank_trajectory(p1, rank_history) - compute_rank_trajectory(p2, rank_history),
             "tourney_win_diff":      compute_tournament_win_rate(p1, tourney, tourney_history) - compute_tournament_win_rate(p2, tourney, tourney_history),
-            "streak_diff":           str1 - str2,
-            "round_win_rate_diff":   rwr1 - rwr2,
-            "dominance_diff":        dom1 - dom2,
-            "tiebreak_diff":         tb1 - tb2,
+            "streak_diff":           compute_streak(p1, match_history) - compute_streak(p2, match_history),
+            "round_win_rate_diff":   compute_round_win_rate(p1, round_history, rnd) - compute_round_win_rate(p2, round_history, rnd),
+            "dominance_diff":        compute_dominance(p1, dominance_history) - compute_dominance(p2, dominance_history),
+            "tiebreak_diff":         compute_tiebreak_rate(p1, tb_history) - compute_tiebreak_rate(p2, tb_history),
             "player_type_diff":      0,
             "round":                 rnd,
             "best_of":               row.get("best_of", 3),
@@ -456,9 +468,9 @@ def train_model():
         round_history[p1][rnd].append(p1_win)
         round_history[p2][rnd].append(1 - p1_win)
 
-        dom_score = parse_score(row["score"])
-        dominance_history[p1].append(dom_score if p1_win else 1 - dom_score)
-        dominance_history[p2].append(1 - dom_score if p1_win else dom_score)
+        dom = parse_score(row["score"])
+        dominance_history[p1].append(dom if p1_win else 1 - dom)
+        dominance_history[p2].append(1 - dom if p1_win else dom)
 
         key  = tuple(sorted([p1, p2]))
         skey = key + (surface,)
@@ -509,74 +521,70 @@ def train_model():
 
     # Player clustering
     all_players = sorted(set(df_clean["player1"].tolist() + df_clean["player2"].tolist()))
-    player_stats_data = []
+    ps_data = []
     for p in all_players:
-        player_stats_data.append({
+        ps_data.append({
             "player":     p,
             "ace_rate":   compute_serve_score(p, ace_history),
             "serve_pct":  compute_serve_score(p, serve_history),
             "upset_rate": compute_upset_rate(p, upset_history),
             "dominance":  compute_dominance(p, dominance_history),
         })
-    ps_df = pd.DataFrame(player_stats_data).set_index("player").fillna(0.5)
-    scaler_cluster = StandardScaler()
-    ps_scaled      = scaler_cluster.fit_transform(ps_df)
-    kmeans         = KMeans(n_clusters=4, random_state=42, n_init=10)
-    clusters       = kmeans.fit_predict(ps_scaled)
-    player_types   = dict(zip(ps_df.index, clusters))
+    ps_df   = pd.DataFrame(ps_data).set_index("player").fillna(0.5)
+    sc_cl   = StandardScaler()
+    ps_sc   = sc_cl.fit_transform(ps_df)
+    kmeans  = KMeans(n_clusters=4, random_state=42, n_init=10)
+    player_types = dict(zip(ps_df.index, kmeans.fit_predict(ps_sc)))
 
-    for i, rec in enumerate(records):
+    for i in range(len(features_df)):
         p1 = df_clean.iloc[i]["player1"]
         p2 = df_clean.iloc[i]["player2"]
         features_df.at[i, "player_type_diff"] = player_types.get(p1, 0) - player_types.get(p2, 0)
 
     X = pd.get_dummies(features_df[feature_cols + ["surface"]], columns=["surface"])
 
-    # Recency weights
     n              = len(features_df)
     sample_weights = np.linspace(0.3, 1.0, n)
+    split          = int(n * 0.8)
 
-    # Scaler for neural network
-    scaler = StandardScaler()
-    X_sc   = scaler.fit_transform(X)
+    X_train    = X.iloc[:split]
+    y_train    = y.iloc[:split]
+    X_test     = X.iloc[split:]
+    y_test     = y.iloc[split:]
+    sw_train   = sample_weights[:split]
 
-    # Train/test split
-    split     = int(n * 0.8)
-    X_train   = X.iloc[:split]
-    X_train_sc = X_sc[:split]
-    y_train   = y.iloc[:split]
-    X_test    = X.iloc[split:]
-    X_test_sc  = X_sc[split:]
-    y_test    = y.iloc[split:]
-    sw_train  = sample_weights[:split]
+    scaler   = StandardScaler()
+    X_tr_sc  = scaler.fit_transform(X_train)
+    X_te_sc  = scaler.transform(X_test)
 
-    # 1. Gradient Boosting
-    # Removed CalibratedClassifierCV — it triggers InvalidParameterError on
-    # sklearn 1.6+ / Python 3.14. GradientBoostingClassifier already outputs
-    # well-calibrated probabilities via its deviance/log-loss objective.
-    gb_cal = GradientBoostingClassifier(
+    # 1. Gradient Boosting + calibration
+    gb = GradientBoostingClassifier(
         n_estimators=300, learning_rate=0.05,
-        max_depth=4, subsample=0.8, min_samples_leaf=5
+        max_depth=4, subsample=0.8, min_samples_leaf=5, random_state=42
     )
-    gb_cal.fit(X_train, y_train, sample_weight=sw_train)
+    gb.fit(X_train, y_train, sample_weight=sw_train)
+    gb_cal = CalibratedClassifierCV(gb, method="isotonic", cv="prefit")
+    gb_cal.fit(X_test, y_test)
 
-    # 2. Random Forest — predict_proba works directly, no wrapper needed
-    rf_cal = RandomForestClassifier(n_estimators=300, max_depth=6, random_state=42)
-    rf_cal.fit(X_train, y_train, sample_weight=sw_train)
+    # 2. Random Forest + calibration
+    rf = RandomForestClassifier(n_estimators=300, max_depth=6, random_state=42)
+    rf.fit(X_train, y_train, sample_weight=sw_train)
+    rf_cal = CalibratedClassifierCV(rf, method="isotonic", cv="prefit")
+    rf_cal.fit(X_test, y_test)
 
     # 3. Logistic Regression
-    lr_clf = LogisticRegression(max_iter=1000)
-    lr_clf.fit(X_train_sc, y_train, sample_weight=sw_train)
+    lr = LogisticRegression(max_iter=1000, random_state=42)
+    lr.fit(X_tr_sc, y_train, sample_weight=sw_train)
 
     # 4. Neural Network
-    mlp_clf = MLPClassifier(
+    mlp = MLPClassifier(
         hidden_layer_sizes=(128, 64, 32),
         activation="relu", learning_rate_init=0.001,
         max_iter=300, random_state=42
     )
-    mlp_clf.fit(X_train_sc, y_train)
+    mlp.fit(X_tr_sc, y_train)
 
-    # 5. Surface specific models
+    # 5. Surface-specific models
     surface_models = {}
     for surf in ["Hard", "Clay", "Grass"]:
         mask = features_df["surface"] == surf
@@ -585,44 +593,43 @@ def train_model():
             y_s  = y[mask]
             sw_s = sample_weights[mask.values]
             clf_s = GradientBoostingClassifier(
-                n_estimators=200, learning_rate=0.05, max_depth=3
+                n_estimators=200, learning_rate=0.05,
+                max_depth=3, random_state=42
             )
             clf_s.fit(X_s, y_s, sample_weight=sw_s)
             surface_models[surf] = clf_s
 
-    clfs = {
-        "gb":      gb_cal,
-        "rf":      rf_cal,
-        "lr":      lr_clf,
-        "mlp":     mlp_clf,
-        "surface": surface_models,
-    }
+    clfs = {"gb": gb_cal, "rf": rf_cal, "lr": lr, "mlp": mlp, "surface": surface_models}
 
-    # Backtest accuracy
-    gb_preds  = gb_cal.predict(X_test)
+    # Backtest
+    gb_preds     = gb_cal.predict(X_test)
     backtest_acc = (gb_preds == y_test).mean()
 
-    # Detailed backtest
     all_probs = []
     for i in range(len(X_test)):
-        row_df  = X_test.iloc[[i]]
-        row_sc  = X_test_sc[[i]]
-        p_list  = []
-        p_list.append(gb_cal.predict_proba(row_df)[0][1])
-        p_list.append(rf_cal.predict_proba(row_df)[0][1])
-        p_list.append(lr_clf.predict_proba(row_sc)[0][1])
-        p_list.append(mlp_clf.predict_proba(row_sc)[0][1])
+        row_df = X_test.iloc[[i]]
+        row_sc = X_te_sc[[i]]
+        p_list = []
+        try: p_list.append(gb_cal.predict_proba(row_df)[0][1])
+        except: pass
+        try: p_list.append(rf_cal.predict_proba(row_df)[0][1])
+        except: pass
+        try: p_list.append(lr.predict_proba(row_sc)[0][1])
+        except: pass
+        try: p_list.append(mlp.predict_proba(row_sc)[0][1])
+        except: pass
         surf_val = features_df["surface"].iloc[split + i]
         if surf_val in surface_models:
-            p_list.append(surface_models[surf_val].predict_proba(row_df)[0][1])
-        all_probs.append(np.mean(p_list))
+            try: p_list.append(surface_models[surf_val].predict_proba(row_df)[0][1])
+            except: pass
+        all_probs.append(np.mean(p_list) if p_list else 0.5)
 
-    test_df             = features_df.iloc[split:].copy()
-    test_df["prob"]     = all_probs
-    test_df["conf"]     = test_df["prob"].apply(lambda x: max(x, 1-x))
-    test_df["correct"]  = (test_df["prob"] > 0.5) == (test_df["p1_win"] == 1)
-    ensemble_acc        = test_df["correct"].mean()
-    test_df["tier"]     = test_df["conf"].apply(
+    test_df            = features_df.iloc[split:].copy()
+    test_df["prob"]    = all_probs
+    test_df["conf"]    = test_df["prob"].apply(lambda x: max(x, 1-x))
+    test_df["correct"] = (test_df["prob"] > 0.5) == (test_df["p1_win"] == 1)
+    ensemble_acc       = test_df["correct"].mean()
+    test_df["tier"]    = test_df["conf"].apply(
         lambda x: "🟢 High (70%+)" if x >= 0.7 else ("🟡 Medium (60-70%)" if x >= 0.6 else "🔴 Low (<60%)")
     )
 
@@ -638,14 +645,10 @@ def train_model():
 
 # ---- App ----
 st.set_page_config(page_title="Tennis Match Predictor", page_icon="🎾", layout="wide")
-st.markdown("""
-<style>
-.stMetric { background-color: #1e2130; padding: 10px; border-radius: 8px; }
-</style>
-""", unsafe_allow_html=True)
-
+st.markdown("<style>.stMetric{background-color:#1e2130;padding:10px;border-radius:8px;}</style>",
+            unsafe_allow_html=True)
 st.title("🎾 Tennis Match Predictor")
-st.caption("Professional ATP predictions — Ensemble ML, Neural Network, Surface Models, Player Clustering")
+st.caption("Ensemble ML · Neural Network · Surface Models · Player Clustering · Calibrated Probabilities")
 
 with st.spinner("Training model... ~2 minutes on first load"):
     (model_elo, clfs, scaler, match_history, surface_history,
@@ -659,14 +662,12 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🔮 Predict", "📅 Calendar", "📊 Odds", "👤 Players", "📈 Backtest", "📋 Track Record"
 ])
 
-# ======== TAB 1: Predict ========
+# ======== TAB 1 ========
 with tab1:
     st.subheader("Predict a Match")
     col1, col2 = st.columns(2)
-    with col1:
-        p1 = st.selectbox("Player 1", all_players, index=0, key="p1")
-    with col2:
-        p2 = st.selectbox("Player 2", all_players, index=1, key="p2")
+    with col1: p1 = st.selectbox("Player 1", all_players, key="p1")
+    with col2: p2 = st.selectbox("Player 2", all_players, index=1, key="p2")
 
     surface   = st.selectbox("Surface", ["Hard", "Clay", "Grass"])
     tourney   = st.selectbox("Tournament", ["Unknown"] + all_tourneys)
@@ -678,10 +679,10 @@ with tab1:
     col1, col2, col3 = st.columns(3)
     with col1:
         temp_val = st.number_input("Temperature (°C)", -10, 50, 20)
-        st.caption(f"{'🔥 Hot' if temp_val >= 30 else ('❄️ Cold' if temp_val <= 10 else '🌤 Mild')}")
+        st.caption("🔥 Hot" if temp_val >= 30 else ("❄️ Cold" if temp_val <= 10 else "🌤 Mild"))
     with col2:
         wind_val = st.number_input("Wind speed (km/h)", 0, 100, 10)
-        st.caption(f"{'💨 Windy' if wind_val >= 25 else '🌬 Calm'}")
+        st.caption("💨 Windy" if wind_val >= 25 else "🌬 Calm")
     with col3:
         indoor = st.selectbox("Venue", ["Outdoor", "Indoor"])
 
@@ -702,9 +703,7 @@ with tab1:
         if p1 == p2:
             st.error("Select two different players.")
         else:
-            (prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, rh2h,
-             mom1, mom2, sv1, sv2, str1, str2, rwr1, rwr2,
-             dom1, dom2, tb1, tb2) = get_prediction(
+            prob, stats = get_prediction(
                 p1, p2, surface, best_of, round_num, tourney,
                 p1_fat, p2_fat, p1_rest, p2_rest,
                 p1_injured, p2_injured, temp_val, wind_val, indoor,
@@ -728,39 +727,43 @@ with tab1:
 
             if p1_injured: st.warning(f"⚠️ Injury penalty applied for {p1}")
             if p2_injured: st.warning(f"⚠️ Injury penalty applied for {p2}")
-
-            pt_labels = {0: "Big Server", 1: "Grinder", 2: "All-Courter", 3: "Upset Specialist"}
-            st.info(f"Player types — {p1}: **{pt_labels.get(player_types.get(p1,0), 'Unknown')}** | {p2}: **{pt_labels.get(player_types.get(p2,0), 'Unknown')}**")
+            st.info(f"Player types — {p1}: **{PT_LABELS.get(stats['pt1'], 'Unknown')}** | {p2}: **{PT_LABELS.get(stats['pt2'], 'Unknown')}**")
 
             with st.expander("Detailed breakdown"):
                 col1, col2 = st.columns(2)
                 with col1:
                     st.write(f"**{p1}**")
-                    st.write(f"Overall Elo: {r1:.0f}")
-                    st.write(f"{surface} Elo: {sr1:.0f}")
-                    st.write(f"Win rate: {wr1*100:.1f}%")
-                    st.write(f"Momentum: {mom1*100:.1f}%")
-                    st.write(f"Dominance: {dom1*100:.1f}%")
-                    st.write(f"Tiebreak rate: {tb1*100:.1f}%")
-                    st.write(f"Serve %: {sv1*100:.1f}%")
-                    st.write(f"Streak: {str1:+d}")
-                    st.write(f"Round {round_num} win rate: {rwr1*100:.1f}%")
+                    st.write(f"Overall Elo: {stats['r1']:.0f}")
+                    st.write(f"{surface} Elo: {stats['sr1']:.0f}")
+                    st.write(f"Win rate: {stats['wr1']*100:.1f}%")
+                    st.write(f"{surface} win rate: {stats['swr1']*100:.1f}%")
+                    st.write(f"Momentum: {stats['mom1']*100:.1f}%")
+                    st.write(f"Dominance: {stats['dom1']*100:.1f}%")
+                    st.write(f"Tiebreak rate: {stats['tb1']*100:.1f}%")
+                    st.write(f"Serve %: {stats['sv1']*100:.1f}%")
+                    st.write(f"Ace rate: {stats['ac1']*100:.1f}%")
+                    st.write(f"Upset rate: {stats['up1']*100:.1f}%")
+                    st.write(f"Streak: {stats['str1']:+d}")
+                    st.write(f"Round {round_num} win rate: {stats['rwr1']*100:.1f}%")
                 with col2:
                     st.write(f"**{p2}**")
-                    st.write(f"Overall Elo: {r2:.0f}")
-                    st.write(f"{surface} Elo: {sr2:.0f}")
-                    st.write(f"Win rate: {wr2*100:.1f}%")
-                    st.write(f"Momentum: {mom2*100:.1f}%")
-                    st.write(f"Dominance: {dom2*100:.1f}%")
-                    st.write(f"Tiebreak rate: {tb2*100:.1f}%")
-                    st.write(f"Serve %: {sv2*100:.1f}%")
-                    st.write(f"Streak: {str2:+d}")
-                    st.write(f"Round {round_num} win rate: {rwr2*100:.1f}%")
-                st.write(f"**Overall H2H for {p1}**: {h2h*100:.1f}%")
-                st.write(f"**{surface} H2H for {p1}**: {sh2h*100:.1f}%")
-                st.write(f"**Recent H2H (last 5) for {p1}**: {rh2h*100:.1f}%")
+                    st.write(f"Overall Elo: {stats['r2']:.0f}")
+                    st.write(f"{surface} Elo: {stats['sr2']:.0f}")
+                    st.write(f"Win rate: {stats['wr2']*100:.1f}%")
+                    st.write(f"{surface} win rate: {stats['swr2']*100:.1f}%")
+                    st.write(f"Momentum: {stats['mom2']*100:.1f}%")
+                    st.write(f"Dominance: {stats['dom2']*100:.1f}%")
+                    st.write(f"Tiebreak rate: {stats['tb2']*100:.1f}%")
+                    st.write(f"Serve %: {stats['sv2']*100:.1f}%")
+                    st.write(f"Ace rate: {stats['ac2']*100:.1f}%")
+                    st.write(f"Upset rate: {stats['up2']*100:.1f}%")
+                    st.write(f"Streak: {stats['str2']:+d}")
+                    st.write(f"Round {round_num} win rate: {stats['rwr2']*100:.1f}%")
+                st.write(f"**Overall H2H for {p1}**: {stats['h2h']*100:.1f}%")
+                st.write(f"**{surface} H2H for {p1}**: {stats['sh2h']*100:.1f}%")
+                st.write(f"**Recent H2H (last 5) for {p1}**: {stats['rh2h']*100:.1f}%")
 
-# ======== TAB 2: Calendar ========
+# ======== TAB 2 ========
 with tab2:
     st.subheader("📅 Upcoming ATP Matches")
     api_key = st.secrets.get("TENNIS_API_KEY", "")
@@ -791,28 +794,27 @@ with tab2:
             api_m = fetch_upcoming_matches(api_key)
         for m in api_m:
             try:
-                p1n = m.get("event_first_player","")
-                p2n = m.get("event_second_player","")
+                p1n = m.get("event_first_player", "")
+                p2n = m.get("event_second_player", "")
                 p1m = next((p for p in all_players if p1n.split()[-1].lower() in p.lower()), None)
                 p2m = next((p for p in all_players if p2n.split()[-1].lower() in p.lower()), None)
                 if p1m and p2m and p1m != p2m:
                     all_cal.append({
-                        "date":    datetime.strptime(m.get("event_date",""), "%Y-%m-%d").date(),
+                        "date":    datetime.strptime(m.get("event_date", ""), "%Y-%m-%d").date(),
                         "player1": p1m, "player2": p2m,
-                        "surface": m.get("event_surface","Hard"),
-                        "tourney": m.get("tournament_name","Unknown"), "best_of": 3
+                        "surface": m.get("event_surface", "Hard"),
+                        "tourney": m.get("tournament_name", "Unknown"), "best_of": 3
                     })
-            except:
-                continue
+            except: continue
 
     if all_cal:
         by_date = defaultdict(list)
         for m in all_cal:
             by_date[m["date"]].append(m)
         for d in sorted(by_date.keys()):
-            st.markdown(f"### 📆 {d.strftime('%A, %B %d %Y') if hasattr(d,'strftime') else d}")
+            st.markdown(f"### 📆 {d.strftime('%A, %B %d %Y') if hasattr(d, 'strftime') else d}")
             for m in by_date[d]:
-                prob, *_ = get_prediction(
+                prob, _ = get_prediction(
                     m["player1"], m["player2"], m["surface"], m["best_of"], 3, m["tourney"],
                     0, 0, 3, 3, False, False, 20, 10, "Outdoor",
                     model_elo, clfs, feature_cols, scaler,
@@ -830,16 +832,14 @@ with tab2:
                     st.caption(f"{m['tourney']} | {m['surface']}")
                 with c2:
                     st.write(f"{m['player1']}: **{prob*100:.1f}%** | {m['player2']}: **{(1-prob)*100:.1f}%**")
-                with c3:
-                    st.write(f"🏆 **{winner}**")
-                with c4:
-                    st.write(f"{confidence_tier(conf)} | {conf:.1f}%")
+                with c3: st.write(f"🏆 **{winner}**")
+                with c4: st.write(f"{confidence_tier(conf)} | {conf:.1f}%")
                 st.divider()
         if st.button("Clear manual matches"):
             st.session_state.manual_matches = []
             st.rerun()
 
-# ======== TAB 3: Odds ========
+# ======== TAB 3 ========
 with tab3:
     st.subheader("📊 Find Value Bets")
     col1, col2 = st.columns(2)
@@ -869,7 +869,7 @@ with tab3:
         if op1 == op2:
             st.error("Select two different players.")
         else:
-            prob, *_ = get_prediction(
+            prob, _ = get_prediction(
                 op1, op2, osurf, obo, oround, "Unknown",
                 of1, of2, or1, or2, oi1, oi2, 20, 10, "Outdoor",
                 model_elo, clfs, feature_cols, scaler,
@@ -899,80 +899,68 @@ with tab3:
             if abs(diff1) <= 0.05 and abs(diff2) <= 0.05:
                 st.info("No significant edge detected.")
 
-# ======== TAB 4: Players ========
+# ======== TAB 4 ========
 with tab4:
     st.subheader("👤 Player Profile")
     search = st.selectbox("Search player", all_players, key="search")
 
     if search:
-        r_ov   = model_elo.get_rating(search)
-        r_h    = model_elo.get_rating(search, "Hard")
-        r_c    = model_elo.get_rating(search, "Clay")
-        r_g    = model_elo.get_rating(search, "Grass")
-        wr     = compute_recent_win_rate(search, match_history)
-        mom    = compute_momentum(search, match_history)
-        sv     = compute_serve_score(search, serve_history)
-        ac     = compute_serve_score(search, ace_history)
-        bp     = compute_serve_score(search, bp_history)
-        up     = compute_upset_rate(search, upset_history)
-        rt     = compute_rank_trajectory(search, rank_history)
-        streak = compute_streak(search, match_history)
-        dom    = compute_dominance(search, dominance_history)
-        tb     = compute_tiebreak_rate(search, tb_history)
-        pt     = player_types.get(search, 0)
-        pt_labels = {0: "Big Server", 1: "Grinder", 2: "All-Courter", 3: "Upset Specialist"}
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Overall Elo", f"{model_elo.get_rating(search):.0f}")
+        col2.metric("Hard Elo",    f"{model_elo.get_rating(search, 'Hard'):.0f}")
+        col3.metric("Clay Elo",    f"{model_elo.get_rating(search, 'Clay'):.0f}")
+        col4.metric("Grass Elo",   f"{model_elo.get_rating(search, 'Grass'):.0f}")
 
-        st.info(f"Player type: **{pt_labels.get(pt, 'Unknown')}**")
+        wr  = compute_recent_win_rate(search, match_history)
+        mom = compute_momentum(search, match_history)
+        sv  = compute_serve_score(search, serve_history)
+        ac  = compute_serve_score(search, ace_history)
+        up  = compute_upset_rate(search, upset_history)
+        rt  = compute_rank_trajectory(search, rank_history)
+        st  = compute_streak(search, match_history)
+        dom = compute_dominance(search, dominance_history)
+        tb  = compute_tiebreak_rate(search, tb_history)
+        pt  = player_types.get(search, 0)
+
+        st.info(f"Player type: **{PT_LABELS.get(pt, 'Unknown')}**")
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Overall Elo", f"{r_ov:.0f}")
-        col2.metric("Hard Elo",    f"{r_h:.0f}")
-        col3.metric("Clay Elo",    f"{r_c:.0f}")
-        col4.metric("Grass Elo",   f"{r_g:.0f}")
+        col1.metric("Win Rate",    f"{wr*100:.1f}%")
+        col2.metric("Momentum",    f"{mom*100:.1f}%")
+        col3.metric("Dominance",   f"{dom*100:.1f}%")
+        col4.metric("Tiebreak %",  f"{tb*100:.1f}%")
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Win Rate",     f"{wr*100:.1f}%")
-        col2.metric("Momentum",     f"{mom*100:.1f}%")
-        col3.metric("Dominance",    f"{dom*100:.1f}%")
-        col4.metric("Tiebreak %",   f"{tb*100:.1f}%")
+        col1.metric("Serve %",     f"{sv*100:.1f}%")
+        col2.metric("Ace Rate",    f"{ac*100:.1f}%")
+        col3.metric("Upset Rate",  f"{up*100:.1f}%")
+        col4.metric("Streak",      f"{st:+d}")
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Serve %",      f"{sv*100:.1f}%")
-        col2.metric("Ace Rate",     f"{ac*100:.1f}%")
-        col3.metric("Upset Rate",   f"{up*100:.1f}%")
-        col4.metric("Streak",       f"{streak:+d}")
-
-        st.subheader("Win rate by round")
         round_labels = {1:"R128",2:"R64",3:"R32",4:"R16",5:"QF",6:"SF",7:"F"}
         round_data   = {round_labels[r]: compute_round_win_rate(search, round_history, r)*100 for r in range(1,8)}
+        st.subheader("Win rate by round")
         st.bar_chart(round_data)
 
         st.subheader("Head to head")
-        vs_player = st.selectbox("Compare vs", [p for p in all_players if p != search], key="vs")
-        if vs_player:
-            h2h_ov  = compute_h2h(search, vs_player, h2h_record)
-            h2h_h   = compute_surface_h2h(search, vs_player, "Hard",  h2h_surface)
-            h2h_c   = compute_surface_h2h(search, vs_player, "Clay",  h2h_surface)
-            h2h_g   = compute_surface_h2h(search, vs_player, "Grass", h2h_surface)
-            h2h_rec = compute_recent_h2h(search, vs_player, h2h_recent)
+        vs = st.selectbox("Compare vs", [p for p in all_players if p != search], key="vs")
+        if vs:
             col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("Overall", f"{h2h_ov*100:.1f}%")
-            col2.metric("Hard",    f"{h2h_h*100:.1f}%")
-            col3.metric("Clay",    f"{h2h_c*100:.1f}%")
-            col4.metric("Grass",   f"{h2h_g*100:.1f}%")
-            col5.metric("Recent",  f"{h2h_rec*100:.1f}%")
+            col1.metric("Overall", f"{compute_h2h(search, vs, h2h_record)*100:.1f}%")
+            col2.metric("Hard",    f"{compute_surface_h2h(search, vs, 'Hard',  h2h_surface)*100:.1f}%")
+            col3.metric("Clay",    f"{compute_surface_h2h(search, vs, 'Clay',  h2h_surface)*100:.1f}%")
+            col4.metric("Grass",   f"{compute_surface_h2h(search, vs, 'Grass', h2h_surface)*100:.1f}%")
+            col5.metric("Recent",  f"{compute_recent_h2h(search, vs, h2h_recent)*100:.1f}%")
 
-# ======== TAB 5: Backtest ========
+# ======== TAB 5 ========
 with tab5:
-    st.subheader("📈 Model Backtest Report")
-
+    st.subheader("📈 Backtest Report")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Single Model Accuracy", f"{backtest_acc*100:.1f}%")
-    col2.metric("Ensemble Accuracy",     f"{ensemble_acc*100:.1f}%")
-    col3.metric("Baseline (rank)",       "~65.0%")
-    col4.metric("Edge over baseline",    f"+{(ensemble_acc-0.65)*100:.1f}%")
+    col1.metric("Single Model",      f"{backtest_acc*100:.1f}%")
+    col2.metric("Ensemble",          f"{ensemble_acc*100:.1f}%")
+    col3.metric("Baseline",          "~65.0%")
+    col4.metric("Edge over baseline", f"+{(ensemble_acc-0.65)*100:.1f}%")
 
-    st.subheader("Accuracy by confidence tier")
+    st.subheader("By confidence tier")
     tier_stats = test_df.groupby("tier").agg(
         Predictions=("correct","count"),
         Accuracy=("correct","mean")
@@ -980,7 +968,7 @@ with tab5:
     tier_stats["Accuracy"] = (tier_stats["Accuracy"]*100).round(1).astype(str) + "%"
     st.dataframe(tier_stats, use_container_width=True)
 
-    st.subheader("Accuracy by surface")
+    st.subheader("By surface")
     surf_stats = test_df.groupby("surface").agg(
         Predictions=("correct","count"),
         Accuracy=("correct","mean")
@@ -988,21 +976,18 @@ with tab5:
     surf_stats["Accuracy"] = (surf_stats["Accuracy"]*100).round(1).astype(str) + "%"
     st.dataframe(surf_stats, use_container_width=True)
 
-    st.subheader("Feature importance (Gradient Boosting)")
-    gb_model  = clfs["gb"]
+    st.subheader("Feature importance")
     try:
-        importances = gb_model.feature_importances_
-        feat_imp    = pd.DataFrame({
-            "Feature":    X_train.columns,
-            "Importance": importances
-        }).sort_values("Importance", ascending=False).head(15)
-        st.bar_chart(feat_imp.set_index("Feature"))
+        imp = clfs["gb"].calibrated_classifiers_[0].estimator.feature_importances_
+        fi  = pd.DataFrame({"Feature": X_train.columns, "Importance": imp})
+        fi  = fi.sort_values("Importance", ascending=False).head(15)
+        st.bar_chart(fi.set_index("Feature"))
     except:
-        st.info("Feature importance unavailable for calibrated model.")
+        st.info("Feature importance chart unavailable.")
 
-# ======== TAB 6: Track Record ========
+# ======== TAB 6 ========
 with tab6:
-    st.subheader("📋 Prediction Track Record")
+    st.subheader("📋 Track Record")
 
     if "track_record" not in st.session_state:
         st.session_state.track_record = []
@@ -1010,13 +995,13 @@ with tab6:
     with st.form("log_pred"):
         c1, c2, c3 = st.columns(3)
         with c1:
-            t_date  = st.date_input("Date", key="td")
-            t_p1    = st.selectbox("Player 1", all_players, key="tp1")
-            t_p2    = st.selectbox("Player 2", all_players, index=1, key="tp2")
+            t_date = st.date_input("Date",    key="td")
+            t_p1   = st.selectbox("Player 1", all_players, key="tp1")
+            t_p2   = st.selectbox("Player 2", all_players, index=1, key="tp2")
         with c2:
-            t_surf   = st.selectbox("Surface", ["Hard","Clay","Grass"], key="tsurf")
+            t_surf    = st.selectbox("Surface", ["Hard","Clay","Grass"], key="tsurf")
             t_tourney = st.text_input("Tournament", key="tt")
-            t_pick   = st.selectbox("Your pick", ["Player 1","Player 2"], key="tpick")
+            t_pick    = st.selectbox("Your pick", ["Player 1","Player 2"], key="tpick")
         with c3:
             t_conf   = st.number_input("Confidence %", 50.0, 100.0, 65.0, key="tc")
             t_result = st.selectbox("Result", ["Pending","Correct","Wrong"], key="tr")
@@ -1044,20 +1029,16 @@ with tab6:
         if len(decided) > 0:
             correct = (decided["Result"] == "Correct").sum()
             total   = len(decided)
-            acc     = correct / total * 100
             col1, col2, col3 = st.columns(3)
             col1.metric("Total",    total)
             col2.metric("Correct",  correct)
-            col3.metric("Accuracy", f"{acc:.1f}%")
+            col3.metric("Accuracy", f"{correct/total*100:.1f}%")
 
-            high = decided[decided["Tier"] == "🟢 High"]
-            med  = decided[decided["Tier"] == "🟡 Medium"]
-            if len(high) > 0:
-                st.metric("🟢 High confidence accuracy",
-                          f"{(high['Result']=='Correct').mean()*100:.1f}%")
-            if len(med) > 0:
-                st.metric("🟡 Medium confidence accuracy",
-                          f"{(med['Result']=='Correct').mean()*100:.1f}%")
+            for tier_label in ["🟢 High", "🟡 Medium"]:
+                tier_df = decided[decided["Tier"] == tier_label]
+                if len(tier_df) > 0:
+                    acc = (tier_df["Result"] == "Correct").mean() * 100
+                    st.metric(f"{tier_label} confidence accuracy", f"{acc:.1f}%")
 
         csv = df_track.to_csv(index=False)
         st.download_button("📥 Export CSV", csv, "track_record.csv", "text/csv")
