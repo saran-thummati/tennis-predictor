@@ -563,14 +563,13 @@ def train_model():
         max_depth=4, subsample=0.8, min_samples_leaf=5, random_state=42
     )
     gb.fit(X_train, y_train, sample_weight=sw_train)
-    gb_cal = CalibratedClassifierCV(gb, method="isotonic", cv="prefit")
-    gb_cal.fit(X_test, y_test)
-
+    gb_cal = CalibratedClassifierCV(gb, method="sigmoid", cv=5)
+    gb_cal.fit(X_train, y_train)
     # 2. Random Forest + calibration
     rf = RandomForestClassifier(n_estimators=300, max_depth=6, random_state=42)
     rf.fit(X_train, y_train, sample_weight=sw_train)
-    rf_cal = CalibratedClassifierCV(rf, method="isotonic", cv="prefit")
-    rf_cal.fit(X_test, y_test)
+    rf_cal = CalibratedClassifierCV(rf, method="sigmoid", cv=5)
+    rf_cal.fit(X_train, y_train)
 
     # 3. Logistic Regression
     lr = LogisticRegression(max_iter=1000, random_state=42)
