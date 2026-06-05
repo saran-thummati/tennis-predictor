@@ -551,19 +551,27 @@ def train_model():
     sw_train  = sample_weights[:split]
 
     # 1. Gradient Boosting
+    # Split train into fit/calibration subsets to avoid leakage with cv="prefit"
+    cal_split   = int(len(X_train) * 0.8)
+    X_tr_fit    = X_train.iloc[:cal_split]
+    y_tr_fit    = y_train.iloc[:cal_split]
+    sw_tr_fit   = sw_train[:cal_split]
+    X_tr_cal    = X_train.iloc[cal_split:]
+    y_tr_cal    = y_train.iloc[cal_split:]
+
     gb_clf = GradientBoostingClassifier(
         n_estimators=300, learning_rate=0.05,
         max_depth=4, subsample=0.8, min_samples_leaf=5
     )
-    gb_clf.fit(X_train, y_train, sample_weight=sw_train)
-    gb_cal = CalibratedClassifierCV(gb_clf, method="isotonic", cv="prefit")
-    gb_cal.fit(X_train, y_train)
+    gb_clf.fit(X_tr_fit, y_tr_fit, sample_weight=sw_tr_fit)
+    gb_cal = CalibratedClassifierCV(estimator=gb_clf, method="isotonic", cv="prefit")
+    gb_cal.fit(X_tr_cal, y_tr_cal)
 
     # 2. Random Forest
     rf_clf = RandomForestClassifier(n_estimators=300, max_depth=6, random_state=42)
-    rf_clf.fit(X_train, y_train, sample_weight=sw_train)
-    rf_cal = CalibratedClassifierCV(rf_clf, method="isotonic", cv="prefit")
-    rf_cal.fit(X_train, y_train)
+    rf_clf.fit(X_tr_fit, y_tr_fit, sample_weight=sw_tr_fit)
+    rf_cal = CalibratedClassifierCV(estimator=rf_clf, method="isotonic", cv="prefit")
+    rf_cal.fit(X_tr_cal, y_tr_cal)
 
     # 3. Logistic Regression
     lr_clf = LogisticRegression(max_iter=1000)
