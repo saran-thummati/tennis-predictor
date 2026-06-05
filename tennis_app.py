@@ -5,8 +5,6 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from sklearn.ensemble import GradientBoostingClassifier
 import requests
-import json
-import os
 
 # ---- Data Loading ----
 @st.cache_data(ttl=86400)
@@ -82,6 +80,24 @@ def compute_momentum(player, match_history, n=10):
     weights = [i + 1 for i in range(len(matches))]
     return sum(w * m for w, m in zip(weights, matches)) / sum(weights)
 
+def compute_streak(player, match_history):
+    matches = match_history[player]
+    if not matches:
+        return 0
+    streak = 0
+    for result in reversed(matches):
+        if result == matches[-1]:
+            streak += 1
+        else:
+            break
+    return streak if matches[-1] == 1 else -streak
+
+def compute_round_win_rate(player, round_history, round_num):
+    matches = round_history[player][round_num]
+    if not matches:
+        return 0.5
+    return sum(matches) / len(matches)
+
 def compute_h2h(p1, p2, h2h_record):
     key = tuple(sorted([p1, p2]))
     record = h2h_record[key]
@@ -101,6 +117,14 @@ def compute_surface_h2h(p1, p2, surface, h2h_surface):
     if p1 == tuple(sorted([p1, p2]))[0]:
         return record["wins_a"] / total
     return record["wins_b"] / total
+
+def compute_recent_h2h(p1, p2, h2h_recent, n=5):
+    key = tuple(sorted([p1, p2]))
+    matches = h2h_recent[key][-n:]
+    if not matches:
+        return 0.5
+    p1_wins = sum(1 for m in matches if m["winner"] == p1)
+    return p1_wins / len(matches)
 
 def compute_serve_score(player, serve_history, n=10):
     recent = serve_history[player][-n:]
@@ -127,6 +151,28 @@ def compute_tournament_win_rate(player, tourney, tourney_history):
         return 0.5
     return sum(matches) / len(matches)
 
+def apply_conditions_adjustment(prob, temp, wind, indoor):
+    if temp == "Hot (30°C+)":
+        prob = prob * 0.97 + 0.03 * 0.5
+    if wind == "Windy":
+        prob = prob * 0.95 + 0.05 * 0.5
+    return prob
+
+def apply_injury_adjustment(prob, p1_injured, p2_injured):
+    if p1_injured and not p2_injured:
+        prob = prob * 0.75
+    elif p2_injured and not p1_injured:
+        prob = prob + (1 - prob) * 0.25
+    elif p1_injured and p2_injured:
+        pass
+    return prob
+
+def apply_streak_adjustment(prob, streak1, streak2):
+    streak_diff = streak1 - streak2
+    adjustment  = streak_diff * 0.005
+    prob = max(0.05, min(0.95, prob + adjustment))
+    return prob
+
 def round_to_num(round_str):
     mapping = {"R128": 1, "R64": 2, "R32": 3, "R16": 4, "QF": 5, "SF": 6, "F": 7, "RR": 3}
     return mapping.get(str(round_str), 3)
@@ -147,10 +193,12 @@ def confidence_tier(conf):
 
 def get_prediction(p1, p2, surface, best_of, round_num, tourney,
                    p1_fatigue, p2_fatigue, p1_rest, p2_rest,
+                   p1_injured, p2_injured, temp, wind, indoor,
                    model, clf, feature_cols, match_history, surface_history,
-                   h2h_record, h2h_surface, serve_history, ace_history,
-                   df_history, bp_history, upset_history, rank_history,
-                   tourney_history, all_surfaces):
+                   h2h_record, h2h_surface, h2h_recent, serve_history,
+                   ace_history, df_history, bp_history, upset_history,
+                   rank_history, tourney_history, round_history, all_surfaces):
+
     r1, r2   = model.get_rating(p1), model.get_rating(p2)
     sr1, sr2 = model.get_rating(p1, surface), model.get_rating(p2, surface)
     wr1  = compute_recent_win_rate(p1, match_history)
@@ -159,8 +207,13 @@ def get_prediction(p1, p2, surface, best_of, round_num, tourney,
     swr2 = compute_surface_win_rate(p2, surface, surface_history)
     mom1 = compute_momentum(p1, match_history)
     mom2 = compute_momentum(p2, match_history)
+    str1 = compute_streak(p1, match_history)
+    str2 = compute_streak(p2, match_history)
+    rwr1 = compute_round_win_rate(p1, round_history, round_num)
+    rwr2 = compute_round_win_rate(p2, round_history, round_num)
     h2h  = compute_h2h(p1, p2, h2h_record)
     sh2h = compute_surface_h2h(p1, p2, surface, h2h_surface)
+    rh2h = compute_recent_h2h(p1, p2, h2h_recent)
     sv1  = compute_serve_score(p1, serve_history)
     sv2  = compute_serve_score(p2, serve_history)
     ac1  = compute_serve_score(p1, ace_history)
@@ -188,6 +241,7 @@ def get_prediction(p1, p2, surface, best_of, round_num, tourney,
         "rest_diff":             p1_rest - p2_rest,
         "h2h_p1":                h2h,
         "surface_h2h_p1":        sh2h,
+        "recent_h2h_p1":         rh2h,
         "serve_diff":            sv1 - sv2,
         "ace_diff":              ac1 - ac2,
         "df_diff":               df1 - df2,
@@ -195,6 +249,8 @@ def get_prediction(p1, p2, surface, best_of, round_num, tourney,
         "upset_diff":            up1 - up2,
         "rank_traj_diff":        rt1 - rt2,
         "tourney_win_diff":      tw1 - tw2,
+        "streak_diff":           str1 - str2,
+        "round_win_rate_diff":   rwr1 - rwr2,
         "round":                 round_num,
         "best_of":               best_of,
     }
@@ -203,7 +259,13 @@ def get_prediction(p1, p2, surface, best_of, round_num, tourney,
 
     input_df = pd.DataFrame([row])[feature_cols]
     prob     = clf.predict_proba(input_df)[0][1]
-    return prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, mom1, mom2, sv1, sv2
+
+    prob = apply_injury_adjustment(prob, p1_injured, p2_injured)
+    prob = apply_streak_adjustment(prob, str1, str2)
+    prob = apply_conditions_adjustment(prob, temp, wind, indoor)
+
+    return (prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, rh2h,
+            mom1, mom2, sv1, sv2, str1, str2, rwr1, rwr2)
 
 # ---- Train Model ----
 @st.cache_resource
@@ -244,6 +306,7 @@ def train_model():
     surface_history = defaultdict(lambda: defaultdict(list))
     h2h_record      = defaultdict(lambda: {"wins_a": 0, "wins_b": 0})
     h2h_surface     = defaultdict(lambda: {"wins_a": 0, "wins_b": 0})
+    h2h_recent      = defaultdict(list)
     serve_history   = defaultdict(list)
     ace_history     = defaultdict(list)
     df_history      = defaultdict(list)
@@ -251,11 +314,13 @@ def train_model():
     upset_history   = defaultdict(lambda: {"wins": 0, "total": 0})
     rank_history    = defaultdict(list)
     tourney_history = defaultdict(lambda: defaultdict(list))
+    round_history   = defaultdict(lambda: defaultdict(list))
 
     for _, row in df_clean.iterrows():
         p1, p2, surface = row["player1"], row["player2"], row["surface"]
         p1_win  = row["p1_win"]
         tourney = row["tourney_name"]
+        rnd     = row["round"]
         k = (level_k.get(row["tourney_level"], 32) + surface_k.get(surface, 32)) / 2
 
         r1, r2   = model.get_rating(p1), model.get_rating(p2)
@@ -266,6 +331,12 @@ def train_model():
         age1     = row.get("age1", np.nan)
         age2     = row.get("age2", np.nan)
         age_diff = age1 - age2 if pd.notna(age1) and pd.notna(age2) else 0
+
+        str1 = compute_streak(p1, match_history)
+        str2 = compute_streak(p2, match_history)
+        rwr1 = compute_round_win_rate(p1, round_history, rnd)
+        rwr2 = compute_round_win_rate(p2, round_history, rnd)
+        rh2h = compute_recent_h2h(p1, p2, h2h_recent)
 
         records.append({
             "elo_diff":              r1 - r2,
@@ -279,6 +350,7 @@ def train_model():
             "rest_diff":             0,
             "h2h_p1":                compute_h2h(p1, p2, h2h_record),
             "surface_h2h_p1":        compute_surface_h2h(p1, p2, surface, h2h_surface),
+            "recent_h2h_p1":         rh2h,
             "serve_diff":            compute_serve_score(p1, serve_history) - compute_serve_score(p2, serve_history),
             "ace_diff":              compute_serve_score(p1, ace_history) - compute_serve_score(p2, ace_history),
             "df_diff":               compute_serve_score(p1, df_history) - compute_serve_score(p2, df_history),
@@ -286,7 +358,9 @@ def train_model():
             "upset_diff":            compute_upset_rate(p1, upset_history) - compute_upset_rate(p2, upset_history),
             "rank_traj_diff":        compute_rank_trajectory(p1, rank_history) - compute_rank_trajectory(p2, rank_history),
             "tourney_win_diff":      compute_tournament_win_rate(p1, tourney, tourney_history) - compute_tournament_win_rate(p2, tourney, tourney_history),
-            "round":                 row["round"],
+            "streak_diff":           str1 - str2,
+            "round_win_rate_diff":   rwr1 - rwr2,
+            "round":                 rnd,
             "best_of":               row.get("best_of", 3),
             "surface":               surface,
             "p1_win":                p1_win,
@@ -299,6 +373,22 @@ def train_model():
         surface_history[p2][surface].append(1 - p1_win)
         tourney_history[p1][tourney].append(p1_win)
         tourney_history[p2][tourney].append(1 - p1_win)
+        round_history[p1][rnd].append(p1_win)
+        round_history[p2][rnd].append(1 - p1_win)
+
+        key  = tuple(sorted([p1, p2]))
+        skey = key + (surface,)
+        h2h_recent[key].append({"winner": p1 if p1_win else p2})
+        if p1 == key[0]:
+            h2h_record[key]["wins_a"]   += p1_win
+            h2h_record[key]["wins_b"]   += (1 - p1_win)
+            h2h_surface[skey]["wins_a"] += p1_win
+            h2h_surface[skey]["wins_b"] += (1 - p1_win)
+        else:
+            h2h_record[key]["wins_b"]   += p1_win
+            h2h_record[key]["wins_a"]   += (1 - p1_win)
+            h2h_surface[skey]["wins_b"] += p1_win
+            h2h_surface[skey]["wins_a"] += (1 - p1_win)
 
         if pd.notna(rank1): rank_history[p1].append(rank1)
         if pd.notna(rank2): rank_history[p2].append(rank2)
@@ -319,27 +409,14 @@ def train_model():
                 upset_history[p2]["total"] += 1
                 upset_history[p2]["wins"]  += (1 - p1_win)
 
-        key  = tuple(sorted([p1, p2]))
-        skey = key + (surface,)
-        if p1 == key[0]:
-            h2h_record[key]["wins_a"]   += p1_win
-            h2h_record[key]["wins_b"]   += (1 - p1_win)
-            h2h_surface[skey]["wins_a"] += p1_win
-            h2h_surface[skey]["wins_b"] += (1 - p1_win)
-        else:
-            h2h_record[key]["wins_b"]   += p1_win
-            h2h_record[key]["wins_a"]   += (1 - p1_win)
-            h2h_surface[skey]["wins_b"] += p1_win
-            h2h_surface[skey]["wins_a"] += (1 - p1_win)
-
     features_df  = pd.DataFrame(records)
     feature_cols = [
         "elo_diff", "surface_elo_diff", "rank_diff", "age_diff",
         "win_rate_diff", "surface_win_rate_diff", "momentum_diff",
         "fatigue_diff", "rest_diff", "h2h_p1", "surface_h2h_p1",
-        "serve_diff", "ace_diff", "df_diff", "bp_diff",
+        "recent_h2h_p1", "serve_diff", "ace_diff", "df_diff", "bp_diff",
         "upset_diff", "rank_traj_diff", "tourney_win_diff",
-        "round", "best_of"
+        "streak_diff", "round_win_rate_diff", "round", "best_of"
     ]
     X = pd.get_dummies(features_df[feature_cols + ["surface"]], columns=["surface"])
     y = features_df["p1_win"]
@@ -350,33 +427,25 @@ def train_model():
     all_surfaces = features_df["surface"].unique().tolist()
     all_tourneys = sorted(df_clean["tourney_name"].unique().tolist())
 
-    # Backtesting on last 2 years
-    cutoff = 20230101
-    train_mask = features_df.index < int(len(features_df) * 0.8)
-    test_df  = features_df[~train_mask].copy()
-    X_test   = pd.get_dummies(test_df[feature_cols + ["surface"]], columns=["surface"])
-    X_test   = X_test.reindex(columns=X.columns, fill_value=0)
-    y_test   = test_df["p1_win"]
-    preds    = clf.predict(X_test)
+    test_mask    = features_df.index >= int(len(features_df) * 0.8)
+    test_df      = features_df[test_mask].copy()
+    X_test       = pd.get_dummies(test_df[feature_cols + ["surface"]], columns=["surface"])
+    X_test       = X_test.reindex(columns=X.columns, fill_value=0)
+    y_test       = test_df["p1_win"]
+    preds        = clf.predict(X_test)
     backtest_acc = (preds == y_test).mean()
 
     return (model, clf, match_history, surface_history,
-            h2h_record, h2h_surface, serve_history, ace_history,
+            h2h_record, h2h_surface, h2h_recent, serve_history, ace_history,
             df_history, bp_history, upset_history, rank_history,
-            tourney_history, all_players, all_surfaces, all_tourneys,
-            X.columns.tolist(), backtest_acc, features_df, X)
+            tourney_history, round_history, all_players, all_surfaces,
+            all_tourneys, X.columns.tolist(), backtest_acc, features_df, X)
 
 # ---- App ----
 st.set_page_config(page_title="Tennis Match Predictor", page_icon="🎾", layout="wide")
-
-# Custom styling
 st.markdown("""
 <style>
-    .main { background-color: #0e1117; }
-    .stMetric { background-color: #1e2130; padding: 10px; border-radius: 8px; }
-    h1 { color: #00ff88; }
-    h2 { color: #ffffff; }
-    .stSuccess { background-color: #1a4a2e; }
+.stMetric { background-color: #1e2130; padding: 10px; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -385,10 +454,10 @@ st.caption("Professional ATP match predictions powered by machine learning")
 
 with st.spinner("Training model... ~90 seconds on first load"):
     (model, clf, match_history, surface_history,
-     h2h_record, h2h_surface, serve_history, ace_history,
+     h2h_record, h2h_surface, h2h_recent, serve_history, ace_history,
      df_history, bp_history, upset_history, rank_history,
-     tourney_history, all_players, all_surfaces, all_tourneys,
-     feature_cols, backtest_acc, features_df, X_train) = train_model()
+     tourney_history, round_history, all_players, all_surfaces,
+     all_tourneys, feature_cols, backtest_acc, features_df, X_train) = train_model()
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "🔮 Predict", "📅 Calendar", "📊 Odds", "👤 Players", "📈 Backtest", "📋 Track Record"
@@ -397,6 +466,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ======== TAB 1: Predict ========
 with tab1:
     st.subheader("Predict a Match")
+
     col1, col2 = st.columns(2)
     with col1:
         p1 = st.selectbox("Player 1", all_players, index=0, key="p1")
@@ -409,28 +479,41 @@ with tab1:
     round_num = st.select_slider("Round", options=[1,2,3,4,5,6,7],
                                   format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1])
 
+    st.subheader("Conditions")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        temp   = st.selectbox("Temperature", ["Mild", "Hot (30°C+)", "Cold"])
+    with col2:
+        wind   = st.selectbox("Wind", ["Calm", "Windy"])
+    with col3:
+        indoor = st.selectbox("Venue", ["Outdoor", "Indoor"])
+
     st.subheader("Fatigue & Rest")
     col1, col2 = st.columns(2)
     with col1:
         st.write(f"**{p1}**")
-        p1_fat  = st.number_input("Matches in last 14 days", 0, 15, 0, key="f1")
-        p1_rest = st.number_input("Days since last match",   0, 365, 3, key="r1")
+        p1_fat     = st.number_input("Matches in last 14 days", 0, 15, 0, key="f1")
+        p1_rest    = st.number_input("Days since last match",   0, 365, 3, key="r1")
+        p1_injured = st.checkbox(f"🚑 {p1} is injured or returning from injury", key="inj1")
     with col2:
         st.write(f"**{p2}**")
-        p2_fat  = st.number_input("Matches in last 14 days", 0, 15, 0, key="f2")
-        p2_rest = st.number_input("Days since last match",   0, 365, 3, key="r2")
+        p2_fat     = st.number_input("Matches in last 14 days", 0, 15, 0, key="f2")
+        p2_rest    = st.number_input("Days since last match",   0, 365, 3, key="r2")
+        p2_injured = st.checkbox(f"🚑 {p2} is injured or returning from injury", key="inj2")
 
     if st.button("Predict", type="primary"):
         if p1 == p2:
             st.error("Please select two different players.")
         else:
-            prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, mom1, mom2, sv1, sv2 = get_prediction(
+            (prob, r1, r2, sr1, sr2, wr1, wr2, h2h, sh2h, rh2h,
+             mom1, mom2, sv1, sv2, str1, str2, rwr1, rwr2) = get_prediction(
                 p1, p2, surface, best_of, round_num, tourney,
                 p1_fat, p2_fat, p1_rest, p2_rest,
+                p1_injured, p2_injured, temp, wind, indoor,
                 model, clf, feature_cols, match_history, surface_history,
-                h2h_record, h2h_surface, serve_history, ace_history,
-                df_history, bp_history, upset_history, rank_history,
-                tourney_history, all_surfaces
+                h2h_record, h2h_surface, h2h_recent, serve_history,
+                ace_history, df_history, bp_history, upset_history,
+                rank_history, tourney_history, round_history, all_surfaces
             )
             winner = p1 if prob > 0.5 else p2
             conf   = max(prob, 1-prob) * 100
@@ -441,11 +524,16 @@ with tab1:
             with col1:
                 st.metric(p1, f"{prob*100:.1f}%")
             with col2:
-                st.metric("Confidence Tier", tier)
+                st.metric("Confidence", tier)
             with col3:
                 st.metric(p2, f"{(1-prob)*100:.1f}%")
 
             st.success(f"🏆 Predicted winner: **{winner}** ({conf:.1f}% confidence)")
+
+            if p1_injured:
+                st.warning(f"⚠️ Injury flag applied for {p1} — prediction adjusted")
+            if p2_injured:
+                st.warning(f"⚠️ Injury flag applied for {p2} — prediction adjusted")
 
             with st.expander("Detailed breakdown"):
                 col1, col2 = st.columns(2)
@@ -458,6 +546,8 @@ with tab1:
                     st.write(f"Serve %: {sv1*100:.1f}%")
                     st.write(f"Fatigue: {p1_fat} matches")
                     st.write(f"Days rest: {p1_rest}")
+                    st.write(f"Streak: {str1:+d}")
+                    st.write(f"Round {round_num} win rate: {rwr1*100:.1f}%")
                 with col2:
                     st.write(f"**{p2}**")
                     st.write(f"Overall Elo: {r2:.0f}")
@@ -467,7 +557,12 @@ with tab1:
                     st.write(f"Serve %: {sv2*100:.1f}%")
                     st.write(f"Fatigue: {p2_fat} matches")
                     st.write(f"Days rest: {p2_rest}")
-                st.write(f"**H2H for {p1}**: {h2h*100:.1f}% | **{surface} H2H**: {sh2h*100:.1f}%")
+                    st.write(f"Streak: {str2:+d}")
+                    st.write(f"Round {round_num} win rate: {rwr2*100:.1f}%")
+                st.write(f"**Overall H2H for {p1}**: {h2h*100:.1f}%")
+                st.write(f"**{surface} H2H for {p1}**: {sh2h*100:.1f}%")
+                st.write(f"**Recent H2H (last 5) for {p1}**: {rh2h*100:.1f}%")
+                st.write(f"**Conditions**: {temp} | {wind} | {indoor}")
 
 # ======== TAB 2: Calendar ========
 with tab2:
@@ -477,40 +572,37 @@ with tab2:
     if not api_key:
         api_key = st.text_input("API key from api-tennis.com", type="password", key="cal_api")
 
-    if not api_key:
-        st.info("No API key — add matches manually below.")
-
-    st.subheader("Add Match Manually")
     if "manual_matches" not in st.session_state:
         st.session_state.manual_matches = []
 
+    st.subheader("Add Match Manually")
     with st.form("add_match"):
         c1, c2, c3, c4 = st.columns(4)
         with c1: m_date    = st.date_input("Date")
         with c2: m_p1      = st.selectbox("Player 1", all_players, key="mp1")
         with c3: m_p2      = st.selectbox("Player 2", all_players, index=1, key="mp2")
-        with c4: m_surface = st.selectbox("Surface", ["Hard","Clay","Grass"], key="ms")
+        with c4: m_surface = st.selectbox("Surface", ["Hard","Clay","Grass"], key="msurf")
         m_tourney = st.text_input("Tournament")
         m_bo      = st.radio("Best of", [3, 5], horizontal=True, key="mbo")
         if st.form_submit_button("Add") and m_p1 != m_p2:
             st.session_state.manual_matches.append({
                 "date": m_date, "player1": m_p1, "player2": m_p2,
-                "surface": m_surface, "tourney": m_tourney or "Unknown", "best_of": m_bo
+                "surface": m_surface, "tourney": m_tourney or "Unknown",
+                "best_of": m_bo
             })
 
-    all_cal_matches = list(st.session_state.manual_matches)
-
+    all_cal = list(st.session_state.manual_matches)
     if api_key:
-        with st.spinner("Fetching matches..."):
-            api_matches = fetch_upcoming_matches(api_key)
-        for m in api_matches:
+        with st.spinner("Fetching..."):
+            api_m = fetch_upcoming_matches(api_key)
+        for m in api_m:
             try:
-                p1n = m.get("event_first_player", "")
-                p2n = m.get("event_second_player", "")
+                p1n = m.get("event_first_player","")
+                p2n = m.get("event_second_player","")
                 p1m = next((p for p in all_players if p1n.split()[-1].lower() in p.lower()), None)
                 p2m = next((p for p in all_players if p2n.split()[-1].lower() in p.lower()), None)
                 if p1m and p2m and p1m != p2m:
-                    all_cal_matches.append({
+                    all_cal.append({
                         "date":    datetime.strptime(m.get("event_date",""), "%Y-%m-%d").date(),
                         "player1": p1m, "player2": p2m,
                         "surface": m.get("event_surface","Hard"),
@@ -520,26 +612,26 @@ with tab2:
             except:
                 continue
 
-    if all_cal_matches:
+    if all_cal:
         by_date = defaultdict(list)
-        for m in all_cal_matches:
+        for m in all_cal:
             by_date[m["date"]].append(m)
 
         for d in sorted(by_date.keys()):
-            st.markdown(f"### 📆 {d.strftime('%A, %B %d %Y') if hasattr(d, 'strftime') else d}")
+            st.markdown(f"### 📆 {d.strftime('%A, %B %d %Y') if hasattr(d,'strftime') else d}")
             for m in by_date[d]:
                 prob, *_ = get_prediction(
                     m["player1"], m["player2"], m["surface"], m["best_of"], 3, m["tourney"],
-                    0, 0, 3, 3,
+                    0, 0, 3, 3, False, False, "Mild", "Calm", "Outdoor",
                     model, clf, feature_cols, match_history, surface_history,
-                    h2h_record, h2h_surface, serve_history, ace_history,
-                    df_history, bp_history, upset_history, rank_history,
-                    tourney_history, all_surfaces
+                    h2h_record, h2h_surface, h2h_recent, serve_history,
+                    ace_history, df_history, bp_history, upset_history,
+                    rank_history, tourney_history, round_history, all_surfaces
                 )
                 winner = m["player1"] if prob > 0.5 else m["player2"]
                 conf   = max(prob, 1-prob) * 100
                 tier   = confidence_tier(conf)
-                c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
+                c1, c2, c3, c4 = st.columns([3,3,2,2])
                 with c1:
                     st.write(f"🎾 **{m['player1']}** vs **{m['player2']}**")
                     st.caption(f"{m['tourney']} | {m['surface']}")
@@ -555,7 +647,7 @@ with tab2:
             st.session_state.manual_matches = []
             st.rerun()
 
-# ======== TAB 3: Odds Comparison ========
+# ======== TAB 3: Odds ========
 with tab3:
     st.subheader("📊 Find Value Bets")
     col1, col2 = st.columns(2)
@@ -565,7 +657,7 @@ with tab3:
     osurf  = st.selectbox("Surface", ["Hard","Clay","Grass"], key="os")
     obo    = st.radio("Best of", [3, 5], horizontal=True, key="obo")
     oround = st.select_slider("Round", options=[1,2,3,4,5,6,7],
-                               format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1], key="or")
+                               format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1], key="ornd")
 
     st.subheader("Vegas Odds (American format)")
     col1, col2 = st.columns(2)
@@ -574,11 +666,13 @@ with tab3:
 
     col1, col2 = st.columns(2)
     with col1:
-        of1 = st.number_input("Matches last 14 days", 0, 15, 0, key="of1")
-        or1 = st.number_input("Days rest", 0, 365, 3, key="orr1")
+        of1  = st.number_input("Matches last 14 days", 0, 15, 0, key="of1")
+        or1  = st.number_input("Days rest", 0, 365, 3, key="orr1")
+        oi1  = st.checkbox(f"{op1} injured", key="oi1")
     with col2:
-        of2 = st.number_input("Matches last 14 days", 0, 15, 0, key="of2")
-        or2 = st.number_input("Days rest", 0, 365, 3, key="orr2")
+        of2  = st.number_input("Matches last 14 days", 0, 15, 0, key="of2")
+        or2  = st.number_input("Days rest", 0, 365, 3, key="orr2")
+        oi2  = st.checkbox(f"{op2} injured", key="oi2")
 
     if st.button("Find Value", type="primary"):
         if op1 == op2:
@@ -586,11 +680,11 @@ with tab3:
         else:
             prob, *_ = get_prediction(
                 op1, op2, osurf, obo, oround, "Unknown",
-                of1, of2, or1, or2,
+                of1, of2, or1, or2, oi1, oi2, "Mild", "Calm", "Outdoor",
                 model, clf, feature_cols, match_history, surface_history,
-                h2h_record, h2h_surface, serve_history, ace_history,
-                df_history, bp_history, upset_history, rank_history,
-                tourney_history, all_surfaces
+                h2h_record, h2h_surface, h2h_recent, serve_history,
+                ace_history, df_history, bp_history, upset_history,
+                rank_history, tourney_history, round_history, all_surfaces
             )
             imp1  = implied_prob(odds1)
             imp2  = implied_prob(odds2)
@@ -614,9 +708,9 @@ with tab3:
             elif diff2 < -0.05:
                 st.warning(f"⚠️ **{op2}** overvalued by {abs(diff2)*100:.1f}%")
             if abs(diff1) <= 0.05 and abs(diff2) <= 0.05:
-                st.info("No significant edge — model and Vegas agree.")
+                st.info("No significant edge detected.")
 
-# ======== TAB 4: Player Search ========
+# ======== TAB 4: Players ========
 with tab4:
     st.subheader("👤 Player Profile")
     search = st.selectbox("Search player", all_players, key="search")
@@ -633,80 +727,90 @@ with tab4:
         bp        = compute_serve_score(search, bp_history)
         up        = compute_upset_rate(search, upset_history)
         rt        = compute_rank_trajectory(search, rank_history)
+        streak    = compute_streak(search, match_history)
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Overall Elo",  f"{r_overall:.0f}")
-        col2.metric("Hard Elo",     f"{r_hard:.0f}")
-        col3.metric("Clay Elo",     f"{r_clay:.0f}")
-        col4.metric("Grass Elo",    f"{r_grass:.0f}")
+        col1.metric("Overall Elo", f"{r_overall:.0f}")
+        col2.metric("Hard Elo",    f"{r_hard:.0f}")
+        col3.metric("Clay Elo",    f"{r_clay:.0f}")
+        col4.metric("Grass Elo",   f"{r_grass:.0f}")
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Recent Win Rate", f"{wr*100:.1f}%")
-        col2.metric("Momentum",        f"{mom*100:.1f}%")
-        col3.metric("Serve %",         f"{sv*100:.1f}%")
-        col4.metric("Upset Rate",      f"{up*100:.1f}%")
+        col1.metric("Win Rate",    f"{wr*100:.1f}%")
+        col2.metric("Momentum",    f"{mom*100:.1f}%")
+        col3.metric("Serve %",     f"{sv*100:.1f}%")
+        col4.metric("Upset Rate",  f"{up*100:.1f}%")
 
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         col1.metric("Ace Rate",        f"{ac*100:.1f}%")
-        col2.metric("Rank Trajectory", f"{rt:+.0f} (+ = improving)")
+        col2.metric("Rank Trajectory", f"{rt:+.0f}")
+        col3.metric("Current Streak",  f"{streak:+d}")
 
-        st.subheader(f"How {search} does vs other players")
+        st.subheader("Round by round win rate")
+        round_labels = {1:"R128", 2:"R64", 3:"R32", 4:"R16", 5:"QF", 6:"SF", 7:"F"}
+        round_data   = {round_labels[r]: compute_round_win_rate(search, round_history, r)*100
+                        for r in range(1, 8)}
+        st.bar_chart(round_data)
+
+        st.subheader(f"Head to head vs another player")
         vs_player = st.selectbox("Compare vs", [p for p in all_players if p != search], key="vs")
         if vs_player:
-            h2h_overall = compute_h2h(search, vs_player, h2h_record)
-            h2h_hard    = compute_surface_h2h(search, vs_player, "Hard",  h2h_surface)
-            h2h_clay    = compute_surface_h2h(search, vs_player, "Clay",  h2h_surface)
-            h2h_grass   = compute_surface_h2h(search, vs_player, "Grass", h2h_surface)
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Overall H2H", f"{h2h_overall*100:.1f}%")
-            col2.metric("Hard H2H",    f"{h2h_hard*100:.1f}%")
-            col3.metric("Clay H2H",    f"{h2h_clay*100:.1f}%")
-            col4.metric("Grass H2H",   f"{h2h_grass*100:.1f}%")
+            h2h_ov  = compute_h2h(search, vs_player, h2h_record)
+            h2h_h   = compute_surface_h2h(search, vs_player, "Hard",  h2h_surface)
+            h2h_c   = compute_surface_h2h(search, vs_player, "Clay",  h2h_surface)
+            h2h_g   = compute_surface_h2h(search, vs_player, "Grass", h2h_surface)
+            h2h_rec = compute_recent_h2h(search, vs_player, h2h_recent)
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Overall H2H", f"{h2h_ov*100:.1f}%")
+            col2.metric("Hard H2H",    f"{h2h_h*100:.1f}%")
+            col3.metric("Clay H2H",    f"{h2h_c*100:.1f}%")
+            col4.metric("Grass H2H",   f"{h2h_g*100:.1f}%")
+            col5.metric("Recent H2H",  f"{h2h_rec*100:.1f}%")
 
 # ======== TAB 5: Backtest ========
 with tab5:
     st.subheader("📈 Model Backtest Report")
-    st.write("Performance of the model tested on the most recent 20% of matches it has never seen.")
-
     col1, col2, col3 = st.columns(3)
     col1.metric("Overall Accuracy",   f"{backtest_acc*100:.1f}%")
     col2.metric("Baseline (rank)",    "~65.0%")
     col3.metric("Edge over baseline", f"+{(backtest_acc-0.65)*100:.1f}%")
 
-    st.subheader("Accuracy by confidence tier")
     test_mask = features_df.index >= int(len(features_df) * 0.8)
     test_df   = features_df[test_mask].copy()
-    X_test    = pd.get_dummies(test_df[["elo_diff","surface_elo_diff","rank_diff","age_diff",
-                                        "win_rate_diff","surface_win_rate_diff","momentum_diff",
-                                        "fatigue_diff","rest_diff","h2h_p1","surface_h2h_p1",
-                                        "serve_diff","ace_diff","df_diff","bp_diff",
-                                        "upset_diff","rank_traj_diff","tourney_win_diff",
-                                        "round","best_of","surface"]], columns=["surface"])
-    X_test    = X_test.reindex(columns=X_train.columns, fill_value=0)
-    probs     = clf.predict_proba(X_test)[:, 1]
-    test_df["prob"]     = probs
-    test_df["conf"]     = test_df["prob"].apply(lambda x: max(x, 1-x))
-    test_df["correct"]  = (test_df["prob"] > 0.5) == (test_df["p1_win"] == 1)
-    test_df["tier"]     = test_df["conf"].apply(lambda x: "High (70%+)" if x >= 0.7 else ("Medium (60-70%)" if x >= 0.6 else "Low (<60%)"))
+    feat_list = ["elo_diff","surface_elo_diff","rank_diff","age_diff",
+                 "win_rate_diff","surface_win_rate_diff","momentum_diff",
+                 "fatigue_diff","rest_diff","h2h_p1","surface_h2h_p1",
+                 "recent_h2h_p1","serve_diff","ace_diff","df_diff","bp_diff",
+                 "upset_diff","rank_traj_diff","tourney_win_diff",
+                 "streak_diff","round_win_rate_diff","round","best_of","surface"]
+    X_test = pd.get_dummies(test_df[feat_list], columns=["surface"])
+    X_test = X_test.reindex(columns=X_train.columns, fill_value=0)
+    probs  = clf.predict_proba(X_test)[:, 1]
+    test_df["prob"]    = probs
+    test_df["conf"]    = test_df["prob"].apply(lambda x: max(x, 1-x))
+    test_df["correct"] = (test_df["prob"] > 0.5) == (test_df["p1_win"] == 1)
+    test_df["tier"]    = test_df["conf"].apply(
+        lambda x: "🟢 High (70%+)" if x >= 0.7 else ("🟡 Medium (60-70%)" if x >= 0.6 else "🔴 Low (<60%)"))
 
+    st.subheader("Accuracy by confidence tier")
     tier_stats = test_df.groupby("tier").agg(
-        Predictions=("correct", "count"),
-        Accuracy=("correct", "mean")
+        Predictions=("correct","count"),
+        Accuracy=("correct","mean")
     ).reset_index()
-    tier_stats["Accuracy"] = (tier_stats["Accuracy"] * 100).round(1).astype(str) + "%"
+    tier_stats["Accuracy"] = (tier_stats["Accuracy"]*100).round(1).astype(str) + "%"
     st.dataframe(tier_stats, use_container_width=True)
 
     st.subheader("Accuracy by surface")
     surf_stats = test_df.groupby("surface").agg(
-        Predictions=("correct", "count"),
-        Accuracy=("correct", "mean")
+        Predictions=("correct","count"),
+        Accuracy=("correct","mean")
     ).reset_index()
-    surf_stats["Accuracy"] = (surf_stats["Accuracy"] * 100).round(1).astype(str) + "%"
+    surf_stats["Accuracy"] = (surf_stats["Accuracy"]*100).round(1).astype(str) + "%"
     st.dataframe(surf_stats, use_container_width=True)
 
     st.subheader("Feature importance")
     feat_imp = pd.DataFrame({
-        "Feature":   X_train.columns,
+        "Feature":    X_train.columns,
         "Importance": clf.feature_importances_
     }).sort_values("Importance", ascending=False).head(15)
     st.bar_chart(feat_imp.set_index("Feature"))
@@ -714,28 +818,27 @@ with tab5:
 # ======== TAB 6: Track Record ========
 with tab6:
     st.subheader("📋 Prediction Track Record")
-    st.write("Log your predictions here and track your accuracy over time.")
 
     if "track_record" not in st.session_state:
         st.session_state.track_record = []
 
-    with st.form("log_prediction"):
-        st.write("**Log a new prediction**")
+    with st.form("log_pred"):
         c1, c2, c3 = st.columns(3)
         with c1:
-            t_date  = st.date_input("Match date", key="td")
-            t_p1    = st.selectbox("Player 1", all_players, key="tp1")
-            t_p2    = st.selectbox("Player 2", all_players, index=1, key="tp2")
+            t_date = st.date_input("Date",    key="td")
+            t_p1   = st.selectbox("Player 1", all_players, key="tp1")
+            t_p2   = st.selectbox("Player 2", all_players, index=1, key="tp2")
         with c2:
-            t_surf  = st.selectbox("Surface", ["Hard","Clay","Grass"], key="ts")
+            t_surf   = st.selectbox("Surface", ["Hard","Clay","Grass"], key="tsurf")
             t_tourney = st.text_input("Tournament", key="tt")
-            t_pick  = st.selectbox("Your pick", ["Player 1", "Player 2"], key="tpick")
+            t_pick   = st.selectbox("Your pick", ["Player 1","Player 2"], key="tpick")
         with c3:
             t_conf   = st.number_input("Model confidence %", 50.0, 100.0, 65.0, key="tc")
-            t_result = st.selectbox("Result (fill after match)", ["Pending", "Correct", "Wrong"], key="tr")
-            t_odds   = st.number_input("Vegas odds on your pick", value=-110, key="to")
+            t_tier   = confidence_tier(t_conf)
+            t_result = st.selectbox("Result", ["Pending","Correct","Wrong"], key="tr")
+            t_odds   = st.number_input("Vegas odds", value=-110, key="to")
 
-        if st.form_submit_button("Log Prediction") and t_p1 != t_p2:
+        if st.form_submit_button("Log") and t_p1 != t_p2:
             st.session_state.track_record.append({
                 "Date":       str(t_date),
                 "Player 1":   t_p1,
@@ -744,7 +847,7 @@ with tab6:
                 "Tournament": t_tourney,
                 "Pick":       t_p1 if t_pick == "Player 1" else t_p2,
                 "Confidence": f"{t_conf:.1f}%",
-                "Tier":       confidence_tier(t_conf),
+                "Tier":       t_tier,
                 "Odds":       t_odds,
                 "Result":     t_result,
             })
@@ -759,23 +862,25 @@ with tab6:
             total   = len(decided)
             acc     = correct / total * 100
 
-            st.divider()
             col1, col2, col3 = st.columns(3)
-            col1.metric("Total predictions", total)
-            col2.metric("Correct",           correct)
-            col3.metric("Accuracy",          f"{acc:.1f}%")
+            col1.metric("Total",    total)
+            col2.metric("Correct",  correct)
+            col3.metric("Accuracy", f"{acc:.1f}%")
 
-            high_conf = decided[decided["Tier"] == "🟢 High"]
-            if len(high_conf) > 0:
-                hc_acc = (high_conf["Result"] == "Correct").mean() * 100
-                st.metric("High confidence accuracy", f"{hc_acc:.1f}%")
+            high = decided[decided["Tier"] == "🟢 High"]
+            med  = decided[decided["Tier"] == "🟡 Medium"]
+            if len(high) > 0:
+                st.metric("🟢 High confidence accuracy",
+                          f"{(high['Result']=='Correct').mean()*100:.1f}%")
+            if len(med) > 0:
+                st.metric("🟡 Medium confidence accuracy",
+                          f"{(med['Result']=='Correct').mean()*100:.1f}%")
 
-        if st.button("Export track record as CSV"):
-            csv = df_track.to_csv(index=False)
-            st.download_button("Download CSV", csv, "track_record.csv", "text/csv")
+        csv = df_track.to_csv(index=False)
+        st.download_button("📥 Export CSV", csv, "track_record.csv", "text/csv")
 
-        if st.button("Clear track record"):
+        if st.button("Clear all"):
             st.session_state.track_record = []
             st.rerun()
     else:
-        st.info("No predictions logged yet. Start adding predictions above!")
+        st.info("No predictions logged yet.")
