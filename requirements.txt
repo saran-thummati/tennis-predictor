@@ -1,8 +1,8 @@
+google-generativeai
+joblib
 streamlit
 pandas
 numpy
 scikit-learn
-requests
 plotly
-google-generativeai
-pip install lightgbm
+requests
