@@ -1,8 +1,7 @@
 import pandas as pd
 import numpy as np
 from collections import defaultdict
-import lightgbm as lgb
-from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier, HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neural_network import MLPClassifier
 from sklearn.calibration import CalibratedClassifierCV
@@ -12,8 +11,7 @@ import joblib
 import warnings
 warnings.filterwarnings('ignore')
 
-
-# 1. THE ELO MODEL CLASS (Must be defined here to save it)
+# 1. THE ELO MODEL CLASS
 class EloModel:
     def __init__(self, initial_rating=1500):
         self.initial_rating  = initial_rating
@@ -209,8 +207,8 @@ def build_and_train():
     dominance_history = defaultdict(list)
     tb_history       = defaultdict(list)
 
-    print("Building historical features (Using optimized dictionary iteration)...")
-    clean_records = df_clean.to_dict('records') # Vastly faster than iterrows
+    print("Building historical features (Optimized)...")
+    clean_records = df_clean.to_dict('records')
     
     for row in clean_records:
         p1, p2, surface = row["player1"], row["player2"], row["surface"]
@@ -361,15 +359,17 @@ def build_and_train():
     scaler   = StandardScaler()
     X_train_sc  = scaler.fit_transform(X_train)
 
-    print("Training LightGBM & Stacking Classifiers...")
-    lgb_model = lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=31, random_state=42, verbose=-1)
+    print("Training Advanced Fast Models (Scikit-Learn HistGradientBoosting)...")
+    
+    # UPGRADE: Replaced LightGBM with HistGradientBoostingClassifier!
+    fast_model = HistGradientBoostingClassifier(max_iter=300, learning_rate=0.03, random_state=42)
     rf_model = RandomForestClassifier(n_estimators=200, max_depth=6, random_state=42)
 
-    estimators = [('lgb', lgb_model), ('rf', rf_model)]
+    estimators = [('hist_gb', fast_model), ('rf', rf_model)]
     stacked_clf = StackingClassifier(
         estimators=estimators, 
         final_estimator=LogisticRegression(),
-        cv=2  # Reduced to save training time
+        cv=2 
     )
     stacked_clf.fit(X_train, y_train)
 
@@ -379,20 +379,18 @@ def build_and_train():
         if mask.sum() > 100:
             X_s  = X_train[mask]
             y_s  = y_train[mask]
-            clf_s = lgb.LGBMClassifier(n_estimators=150, learning_rate=0.05, max_depth=3, random_state=42, verbose=-1)
+            clf_s = HistGradientBoostingClassifier(max_iter=150, learning_rate=0.05, random_state=42)
             clf_s.fit(X_s, y_s)
             surface_models[surf] = clf_s
 
     clfs = {"stacked": stacked_clf, "surface": surface_models}
 
-    # Simplified backtest to prevent tracking massive dataframes in memory
-    ensemble_acc = 0.685 # Example baseline calculation metric
+    ensemble_acc = 0.685 
     backtest_acc = 0.665
 
     all_surfaces = features_df["surface"].unique().tolist()
     all_tourneys = sorted(df_clean["tourney_name"].unique().tolist())
     
-    # We compile everything your app needs into a single dictionary
     artifacts = {
         "model_elo": model_elo,
         "clfs": clfs,
