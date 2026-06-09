@@ -2,5 +2,5 @@ streamlit
 pandas
 numpy
 scikit-learn
-newsapi-python
-anthropic
+requests
+plotly
