@@ -10,7 +10,8 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import joblib
 import warnings
-warnings.filterWarning('ignore')
+warnings.filterwarnings('ignore')
+
 
 # 1. THE ELO MODEL CLASS (Must be defined here to save it)
 class EloModel:
