@@ -645,13 +645,6 @@ st.markdown("""
     /* Global metric styling */
     .stMetric {background-color:#1e2130; padding:10px; border-radius:8px;}
     
-    /* Top score strip buttons */
-    .stButton > button {
-        width: 100%; height: 100%; min-height: 100px;
-        background-color: #1e2130; border: 1px solid #333; border-left: 5px solid #4CAF50;
-        text-align: left; justify-content: flex-start; padding: 10px;
-    }
-    
     /* Hide default sidebar arrow and add hamburger */
     [data-testid="collapsedControl"] svg { display: none !important; }
     [data-testid="collapsedControl"]::before {
@@ -664,23 +657,6 @@ st.markdown("""
 if "selected_match" not in st.session_state: st.session_state.selected_match = None
 if "track_record" not in st.session_state: st.session_state.track_record = []
 if "manual_matches" not in st.session_state: st.session_state.manual_matches = []
-
-# Top Global Score Strip (Mocked for layout/visuals)
-st.markdown("### 🕒 Live & Upcoming Matches")
-score_cols = st.columns(4)
-with score_cols[0]:
-    if st.button("🎾 LIVE - Set 3\n\nJ. Sinner (6) (4) (3)\nA. Zverev (4) (6) (2)", key="top_m1"):
-        st.session_state.selected_match = "Sinner vs Zverev"
-with score_cols[1]:
-    if st.button("🎾 LIVE - Set 1\n\nC. Alcaraz (5)\nJ. Draper (4)", key="top_m2"):
-        st.session_state.selected_match = "Alcaraz vs Draper"
-with score_cols[2]:
-    if st.button("🕒 Today - 17:30\n\nD. Medvedev\nH. Rune", key="top_m3"):
-        st.session_state.selected_match = "Medvedev vs Rune"
-with score_cols[3]:
-    if st.button("🕒 Tomorrow - 13:00\n\nT. Fritz\nA. de Minaur", key="top_m4"):
-        st.session_state.selected_match = "Fritz vs de Minaur"
-st.divider()
 
 with st.spinner("Training model... ~2 minutes on first load"):
     (model_elo, clfs, scaler, match_history, surface_history, h2h_record, h2h_surface, h2h_recent, serve_history, ace_history, df_history, bp_history, upset_history, rank_history, tourney_history, round_history, dominance_history, tb_history, player_types, all_players, all_surfaces, all_tourneys, feature_cols, backtest_acc, ensemble_acc, test_df, X_train) = train_model()
