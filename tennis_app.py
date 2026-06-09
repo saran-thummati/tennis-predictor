@@ -669,170 +669,232 @@ with st.spinner("Training model... ~2 minutes on first load"):
      player_types, all_players, all_surfaces, all_tourneys,
      feature_cols, backtest_acc, ensemble_acc, test_df, X_train) = train_model()
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🔮 Predict", "📅 Calendar", "📊 Odds", "👤 Players", "📈 Backtest", "📋 Track Record"
-])
+# --- THE HIDE TOGGLE ---
+st.sidebar.title("Settings")
+show_extra_features = st.sidebar.checkbox("Show Advanced Tools (Calendar, Odds, etc.)", value=False)
 
-# ======== TAB 1 ========
-with tab1:
-    st.subheader("Predict a Match")
-    col1, col2 = st.columns(2)
-    with col1: p1 = st.selectbox("Player 1", all_players, key="p1")
-    with col2: p2 = st.selectbox("Player 2", all_players, index=1, key="p2")
+# ======== PREDICTOR (Always Visible) ========
+st.subheader("Predict a Match")
+col1, col2 = st.columns(2)
+with col1: p1 = st.selectbox("Player 1", all_players, key="p1")
+with col2: p2 = st.selectbox("Player 2", all_players, index=1, key="p2")
 
-    surface   = st.selectbox("Surface", ["Hard", "Clay", "Grass"])
-    tourney   = st.selectbox("Tournament", ["Unknown"] + all_tourneys)
-    best_of   = st.radio("Best of", [3, 5], horizontal=True)
-    round_num = st.select_slider("Round", options=[1,2,3,4,5,6,7],
-                                  format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1])
+surface   = st.selectbox("Surface", ["Hard", "Clay", "Grass"])
+tourney   = st.selectbox("Tournament", ["Unknown"] + all_tourneys)
+best_of   = st.radio("Best of", [3, 5], horizontal=True)
+round_num = st.select_slider("Round", options=[1,2,3,4,5,6,7],
+                              format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1])
 
-    st.subheader("Conditions")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        temp_val = st.number_input("Temperature (°C)", -10, 50, 20)
-        st.caption("🔥 Hot" if temp_val >= 30 else ("❄️ Cold" if temp_val <= 10 else "🌤 Mild"))
-    with col2:
-        wind_val = st.number_input("Wind speed (km/h)", 0, 100, 10)
-        st.caption("💨 Windy" if wind_val >= 25 else "🌬 Calm")
-    with col3:
-        indoor = st.selectbox("Venue", ["Outdoor", "Indoor"])
+st.subheader("Conditions")
+col1, col2, col3 = st.columns(3)
+with col1:
+    temp_val = st.number_input("Temperature (°C)", -10, 50, 20)
+    st.caption("🔥 Hot" if temp_val >= 30 else ("❄️ Cold" if temp_val <= 10 else "🌤 Mild"))
+with col2:
+    wind_val = st.number_input("Wind speed (km/h)", 0, 100, 10)
+    st.caption("💨 Windy" if wind_val >= 25 else "🌬 Calm")
+with col3:
+    indoor = st.selectbox("Venue", ["Outdoor", "Indoor"])
 
-    st.subheader("Fatigue & Rest")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write(f"**{p1}**")
-        p1_fat     = st.number_input("Matches in last 14 days", 0, 15, 0, key="f1")
-        p1_rest    = st.number_input("Days since last match",   0, 365, 3, key="r1")
-        p1_injured = st.checkbox(f"🚑 {p1} injured", key="inj1")
-    with col2:
-        st.write(f"**{p2}**")
-        p2_fat     = st.number_input("Matches in last 14 days", 0, 15, 0, key="f2")
-        p2_rest    = st.number_input("Days since last match",   0, 365, 3, key="r2")
-        p2_injured = st.checkbox(f"🚑 {p2} injured", key="inj2")
+st.subheader("Fatigue & Rest")
+col1, col2 = st.columns(2)
+with col1:
+    st.write(f"**{p1}**")
+    p1_fat     = st.number_input("Matches in last 14 days", 0, 15, 0, key="f1")
+    p1_rest    = st.number_input("Days since last match",   0, 365, 3, key="r1")
+    p1_injured = st.checkbox(f"🚑 {p1} injured", key="inj1")
+with col2:
+    st.write(f"**{p2}**")
+    p2_fat     = st.number_input("Matches in last 14 days", 0, 15, 0, key="f2")
+    p2_rest    = st.number_input("Days since last match",   0, 365, 3, key="r2")
+    p2_injured = st.checkbox(f"🚑 {p2} injured", key="inj2")
 
-    if st.button("Predict", type="primary"):
-        if p1 == p2:
-            st.error("Select two different players.")
-        else:
-            prob, stats = get_prediction(
-                p1, p2, surface, best_of, round_num, tourney,
-                p1_fat, p2_fat, p1_rest, p2_rest,
-                p1_injured, p2_injured, temp_val, wind_val, indoor,
-                model_elo, clfs, feature_cols, scaler,
-                match_history, surface_history, h2h_record, h2h_surface,
-                h2h_recent, serve_history, ace_history, df_history,
-                bp_history, upset_history, rank_history, tourney_history,
-                round_history, dominance_history, tb_history,
-                player_types, all_surfaces
-            )
-            winner = p1 if prob > 0.5 else p2
-            conf   = max(prob, 1-prob) * 100
-            tier   = confidence_tier(conf)
+if st.button("Predict", type="primary"):
+    if p1 == p2:
+        st.error("Select two different players.")
+    else:
+        prob, stats = get_prediction(
+            p1, p2, surface, best_of, round_num, tourney,
+            p1_fat, p2_fat, p1_rest, p2_rest,
+            p1_injured, p2_injured, temp_val, wind_val, indoor,
+            model_elo, clfs, feature_cols, scaler,
+            match_history, surface_history, h2h_record, h2h_surface,
+            h2h_recent, serve_history, ace_history, df_history,
+            bp_history, upset_history, rank_history, tourney_history,
+            round_history, dominance_history, tb_history,
+            player_types, all_surfaces
+        )
+        winner = p1 if prob > 0.5 else p2
+        conf   = max(prob, 1-prob) * 100
+        tier   = confidence_tier(conf)
 
-            st.divider()
-            col1, col2, col3 = st.columns(3)
-            with col1: st.metric(p1, f"{prob*100:.1f}%")
-            with col2: st.metric("Confidence", tier)
-            with col3: st.metric(p2, f"{(1-prob)*100:.1f}%")
-            st.success(f"🏆 Predicted winner: **{winner}** ({conf:.1f}% confidence)")
+        st.divider()
+        col1, col2, col3 = st.columns(3)
+        with col1: st.metric(p1, f"{prob*100:.1f}%")
+        with col2: st.metric("Confidence", tier)
+        with col3: st.metric(p2, f"{(1-prob)*100:.1f}%")
+        st.success(f"🏆 Predicted winner: **{winner}** ({conf:.1f}% confidence)")
 
-            if p1_injured: st.warning(f"⚠️ Injury penalty applied for {p1}")
-            if p2_injured: st.warning(f"⚠️ Injury penalty applied for {p2}")
-            st.info(f"Player types — {p1}: **{PT_LABELS.get(stats['pt1'], 'Unknown')}** | {p2}: **{PT_LABELS.get(stats['pt2'], 'Unknown')}**")
+        if p1_injured: st.warning(f"⚠️ Injury penalty applied for {p1}")
+        if p2_injured: st.warning(f"⚠️ Injury penalty applied for {p2}")
+        st.info(f"Player types — {p1}: **{PT_LABELS.get(stats['pt1'], 'Unknown')}** | {p2}: **{PT_LABELS.get(stats['pt2'], 'Unknown')}**")
 
-            with st.expander("Detailed breakdown"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**{p1}**")
-                    st.write(f"Overall Elo: {stats['r1']:.0f}")
-                    st.write(f"{surface} Elo: {stats['sr1']:.0f}")
-                    st.write(f"Win rate: {stats['wr1']*100:.1f}%")
-                    st.write(f"{surface} win rate: {stats['swr1']*100:.1f}%")
-                    st.write(f"Momentum: {stats['mom1']*100:.1f}%")
-                    st.write(f"Dominance: {stats['dom1']*100:.1f}%")
-                    st.write(f"Tiebreak rate: {stats['tb1']*100:.1f}%")
-                    st.write(f"Serve %: {stats['sv1']*100:.1f}%")
-                    st.write(f"Ace rate: {stats['ac1']*100:.1f}%")
-                    st.write(f"Upset rate: {stats['up1']*100:.1f}%")
-                    st.write(f"Streak: {stats['str1']:+d}")
-                    st.write(f"Round {round_num} win rate: {stats['rwr1']*100:.1f}%")
-                with col2:
-                    st.write(f"**{p2}**")
-                    st.write(f"Overall Elo: {stats['r2']:.0f}")
-                    st.write(f"{surface} Elo: {stats['sr2']:.0f}")
-                    st.write(f"Win rate: {stats['wr2']*100:.1f}%")
-                    st.write(f"{surface} win rate: {stats['swr2']*100:.1f}%")
-                    st.write(f"Momentum: {stats['mom2']*100:.1f}%")
-                    st.write(f"Dominance: {stats['dom2']*100:.1f}%")
-                    st.write(f"Tiebreak rate: {stats['tb2']*100:.1f}%")
-                    st.write(f"Serve %: {stats['sv2']*100:.1f}%")
-                    st.write(f"Ace rate: {stats['ac2']*100:.1f}%")
-                    st.write(f"Upset rate: {stats['up2']*100:.1f}%")
-                    st.write(f"Streak: {stats['str2']:+d}")
-                    st.write(f"Round {round_num} win rate: {stats['rwr2']*100:.1f}%")
-                st.write(f"**Overall H2H for {p1}**: {stats['h2h']*100:.1f}%")
-                st.write(f"**{surface} H2H for {p1}**: {stats['sh2h']*100:.1f}%")
-                st.write(f"**Recent H2H (last 5) for {p1}**: {stats['rh2h']*100:.1f}%")
+        with st.expander("Detailed breakdown"):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**{p1}**")
+                st.write(f"Overall Elo: {stats['r1']:.0f}")
+                st.write(f"{surface} Elo: {stats['sr1']:.0f}")
+                st.write(f"Win rate: {stats['wr1']*100:.1f}%")
+                st.write(f"{surface} win rate: {stats['swr1']*100:.1f}%")
+                st.write(f"Momentum: {stats['mom1']*100:.1f}%")
+                st.write(f"Dominance: {stats['dom1']*100:.1f}%")
+                st.write(f"Tiebreak rate: {stats['tb1']*100:.1f}%")
+                st.write(f"Serve %: {stats['sv1']*100:.1f}%")
+                st.write(f"Ace rate: {stats['ac1']*100:.1f}%")
+                st.write(f"Upset rate: {stats['up1']*100:.1f}%")
+                st.write(f"Streak: {stats['str1']:+d}")
+                st.write(f"Round {round_num} win rate: {stats['rwr1']*100:.1f}%")
+            with col2:
+                st.write(f"**{p2}**")
+                st.write(f"Overall Elo: {stats['r2']:.0f}")
+                st.write(f"{surface} Elo: {stats['sr2']:.0f}")
+                st.write(f"Win rate: {stats['wr2']*100:.1f}%")
+                st.write(f"{surface} win rate: {stats['swr2']*100:.1f}%")
+                st.write(f"Momentum: {stats['mom2']*100:.1f}%")
+                st.write(f"Dominance: {stats['dom2']*100:.1f}%")
+                st.write(f"Tiebreak rate: {stats['tb2']*100:.1f}%")
+                st.write(f"Serve %: {stats['sv2']*100:.1f}%")
+                st.write(f"Ace rate: {stats['ac2']*100:.1f}%")
+                st.write(f"Upset rate: {stats['up2']*100:.1f}%")
+                st.write(f"Streak: {stats['str2']:+d}")
+                st.write(f"Round {round_num} win rate: {stats['rwr2']*100:.1f}%")
+            st.write(f"**Overall H2H for {p1}**: {stats['h2h']*100:.1f}%")
+            st.write(f"**{surface} H2H for {p1}**: {stats['sh2h']*100:.1f}%")
+            st.write(f"**Recent H2H (last 5) for {p1}**: {stats['rh2h']*100:.1f}%")
 
-# ======== TAB 2 ========
-with tab2:
-    st.subheader("📅 Upcoming ATP Matches")
-    api_key = st.secrets.get("TENNIS_API_KEY", "")
-    if not api_key:
-        api_key = st.text_input("API key from api-tennis.com", type="password", key="cal_api")
+# ======== EXTRA FEATURES (Hidden by Default) ========
+if show_extra_features:
+    st.divider()
+    
+    tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📅 Calendar", "📊 Odds", "👤 Players", "📈 Backtest", "📋 Track Record"
+    ])
 
-    if "manual_matches" not in st.session_state:
-        st.session_state.manual_matches = []
+    # ======== TAB 2 ========
+    with tab2:
+        st.subheader("📅 Upcoming ATP Matches")
+        api_key = st.secrets.get("TENNIS_API_KEY", "")
+        if not api_key:
+            api_key = st.text_input("API key from api-tennis.com", type="password", key="cal_api")
 
-    st.subheader("Add Match Manually")
-    with st.form("add_match"):
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: m_date    = st.date_input("Date")
-        with c2: m_p1      = st.selectbox("Player 1", all_players, key="mp1")
-        with c3: m_p2      = st.selectbox("Player 2", all_players, index=1, key="mp2")
-        with c4: m_surface = st.selectbox("Surface", ["Hard","Clay","Grass"], key="msurf")
-        m_tourney = st.text_input("Tournament")
-        m_bo      = st.radio("Best of", [3, 5], horizontal=True, key="mbo")
-        if st.form_submit_button("Add") and m_p1 != m_p2:
-            st.session_state.manual_matches.append({
-                "date": m_date, "player1": m_p1, "player2": m_p2,
-                "surface": m_surface, "tourney": m_tourney or "Unknown", "best_of": m_bo
-            })
+        if "manual_matches" not in st.session_state:
+            st.session_state.manual_matches = []
 
-    all_cal = list(st.session_state.manual_matches)
-    if api_key:
-        with st.spinner("Fetching..."):
-            api_m = fetch_upcoming_matches(api_key)
-        for m in api_m:
-            try:
-                p1n = m.get("event_first_player", "")
-                p2n = m.get("event_second_player", "")
-                
-                # FIX: Check for empty strings to prevent IndexError
-                if not p1n or not p2n:
-                    continue
+        st.subheader("Add Match Manually")
+        with st.form("add_match"):
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: m_date    = st.date_input("Date")
+            with c2: m_p1      = st.selectbox("Player 1", all_players, key="mp1")
+            with c3: m_p2      = st.selectbox("Player 2", all_players, index=1, key="mp2")
+            with c4: m_surface = st.selectbox("Surface", ["Hard","Clay","Grass"], key="msurf")
+            m_tourney = st.text_input("Tournament")
+            m_bo      = st.radio("Best of", [3, 5], horizontal=True, key="mbo")
+            if st.form_submit_button("Add") and m_p1 != m_p2:
+                st.session_state.manual_matches.append({
+                    "date": m_date, "player1": m_p1, "player2": m_p2,
+                    "surface": m_surface, "tourney": m_tourney or "Unknown", "best_of": m_bo
+                })
+
+        all_cal = list(st.session_state.manual_matches)
+        if api_key:
+            with st.spinner("Fetching..."):
+                api_m = fetch_upcoming_matches(api_key)
+            for m in api_m:
+                try:
+                    p1n = m.get("event_first_player", "")
+                    p2n = m.get("event_second_player", "")
                     
-                p1m = next((p for p in all_players if p1n.split()[-1].lower() in p.lower()), None)
-                p2m = next((p for p in all_players if p2n.split()[-1].lower() in p.lower()), None)
-                if p1m and p2m and p1m != p2m:
-                    all_cal.append({
-                        "date":    datetime.strptime(m.get("event_date", ""), "%Y-%m-%d").date(),
-                        "player1": p1m, "player2": p2m,
-                        "surface": m.get("event_surface", "Hard"),
-                        "tourney": m.get("tournament_name", "Unknown"), "best_of": 3
-                    })
-            except: continue
+                    # FIX: Check for empty strings to prevent IndexError
+                    if not p1n or not p2n:
+                        continue
+                        
+                    p1m = next((p for p in all_players if p1n.split()[-1].lower() in p.lower()), None)
+                    p2m = next((p for p in all_players if p2n.split()[-1].lower() in p.lower()), None)
+                    if p1m and p2m and p1m != p2m:
+                        all_cal.append({
+                            "date":    datetime.strptime(m.get("event_date", ""), "%Y-%m-%d").date(),
+                            "player1": p1m, "player2": p2m,
+                            "surface": m.get("event_surface", "Hard"),
+                            "tourney": m.get("tournament_name", "Unknown"), "best_of": 3
+                        })
+                except: continue
 
-    if all_cal:
-        by_date = defaultdict(list)
-        for m in all_cal:
-            by_date[m["date"]].append(m)
-        for d in sorted(by_date.keys()):
-            st.markdown(f"### 📆 {d.strftime('%A, %B %d %Y') if hasattr(d, 'strftime') else d}")
-            for m in by_date[d]:
+        if all_cal:
+            by_date = defaultdict(list)
+            for m in all_cal:
+                by_date[m["date"]].append(m)
+            for d in sorted(by_date.keys()):
+                st.markdown(f"### 📆 {d.strftime('%A, %B %d %Y') if hasattr(d, 'strftime') else d}")
+                for m in by_date[d]:
+                    prob, _ = get_prediction(
+                        m["player1"], m["player2"], m["surface"], m["best_of"], 3, m["tourney"],
+                        0, 0, 3, 3, False, False, 20, 10, "Outdoor",
+                        model_elo, clfs, feature_cols, scaler,
+                        match_history, surface_history, h2h_record, h2h_surface,
+                        h2h_recent, serve_history, ace_history, df_history,
+                        bp_history, upset_history, rank_history, tourney_history,
+                        round_history, dominance_history, tb_history,
+                        player_types, all_surfaces
+                    )
+                    winner = m["player1"] if prob > 0.5 else m["player2"]
+                    conf   = max(prob, 1-prob) * 100
+                    c1, c2, c3, c4 = st.columns([3,3,2,2])
+                    with c1:
+                        st.write(f"🎾 **{m['player1']}** vs **{m['player2']}**")
+                        st.caption(f"{m['tourney']} | {m['surface']}")
+                    with c2:
+                        st.write(f"{m['player1']}: **{prob*100:.1f}%** | {m['player2']}: **{(1-prob)*100:.1f}%**")
+                    with c3: st.write(f"🏆 **{winner}**")
+                    with c4: st.write(f"{confidence_tier(conf)} | {conf:.1f}%")
+                    st.divider()
+            if st.button("Clear manual matches"):
+                st.session_state.manual_matches = []
+                st.rerun()
+
+    # ======== TAB 3 ========
+    with tab3:
+        st.subheader("📊 Find Value Bets")
+        col1, col2 = st.columns(2)
+        with col1: op1 = st.selectbox("Player 1", all_players, key="op1")
+        with col2: op2 = st.selectbox("Player 2", all_players, index=1, key="op2")
+
+        osurf  = st.selectbox("Surface", ["Hard","Clay","Grass"], key="os")
+        obo    = st.radio("Best of", [3, 5], horizontal=True, key="obo")
+        oround = st.select_slider("Round", options=[1,2,3,4,5,6,7],
+                                   format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1], key="ornd")
+
+        col1, col2 = st.columns(2)
+        with col1: odds1 = st.number_input(f"{op1} odds", value=-150, key="o1")
+        with col2: odds2 = st.number_input(f"{op2} odds", value=120,  key="o2")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            of1 = st.number_input("Matches last 14 days", 0, 15, 0, key="of1")
+            or1 = st.number_input("Days rest", 0, 365, 3, key="orr1")
+            oi1 = st.checkbox(f"{op1} injured", key="oi1")
+        with col2:
+            of2 = st.number_input("Matches last 14 days", 0, 15, 0, key="of2")
+            or2 = st.number_input("Days rest", 0, 365, 3, key="orr2")
+            oi2 = st.checkbox(f"{op2} injured", key="oi2")
+
+        if st.button("Find Value", type="primary"):
+            if op1 == op2:
+                st.error("Select two different players.")
+            else:
                 prob, _ = get_prediction(
-                    m["player1"], m["player2"], m["surface"], m["best_of"], 3, m["tourney"],
-                    0, 0, 3, 3, False, False, 20, 10, "Outdoor",
+                    op1, op2, osurf, obo, oround, "Unknown",
+                    of1, of2, or1, or2, oi1, oi2, 20, 10, "Outdoor",
                     model_elo, clfs, feature_cols, scaler,
                     match_history, surface_history, h2h_record, h2h_surface,
                     h2h_recent, serve_history, ace_history, df_history,
@@ -840,226 +902,171 @@ with tab2:
                     round_history, dominance_history, tb_history,
                     player_types, all_surfaces
                 )
-                winner = m["player1"] if prob > 0.5 else m["player2"]
-                conf   = max(prob, 1-prob) * 100
-                c1, c2, c3, c4 = st.columns([3,3,2,2])
-                with c1:
-                    st.write(f"🎾 **{m['player1']}** vs **{m['player2']}**")
-                    st.caption(f"{m['tourney']} | {m['surface']}")
-                with c2:
-                    st.write(f"{m['player1']}: **{prob*100:.1f}%** | {m['player2']}: **{(1-prob)*100:.1f}%**")
-                with c3: st.write(f"🏆 **{winner}**")
-                with c4: st.write(f"{confidence_tier(conf)} | {conf:.1f}%")
-                st.divider()
-        if st.button("Clear manual matches"):
-            st.session_state.manual_matches = []
-            st.rerun()
+                imp1  = implied_prob(odds1)
+                imp2  = implied_prob(odds2)
+                diff1 = prob - imp1
+                diff2 = (1-prob) - imp2
 
-# ======== TAB 3 ========
-with tab3:
-    st.subheader("📊 Find Value Bets")
-    col1, col2 = st.columns(2)
-    with col1: op1 = st.selectbox("Player 1", all_players, key="op1")
-    with col2: op2 = st.selectbox("Player 2", all_players, index=1, key="op2")
+                col1, col2 = st.columns(2)
+                with col1: st.metric(op1, f"Model: {prob*100:.1f}%", delta=f"Vegas: {imp1*100:.1f}%")
+                with col2: st.metric(op2, f"Model: {(1-prob)*100:.1f}%", delta=f"Vegas: {imp2*100:.1f}%")
 
-    osurf  = st.selectbox("Surface", ["Hard","Clay","Grass"], key="os")
-    obo    = st.radio("Best of", [3, 5], horizontal=True, key="obo")
-    oround = st.select_slider("Round", options=[1,2,3,4,5,6,7],
-                               format_func=lambda x: ["R128","R64","R32","R16","QF","SF","F"][x-1], key="ornd")
+                if diff1 > 0.05:
+                    st.success(f"✅ **{op1}** undervalued — edge +{diff1*100:.1f}%")
+                elif diff1 < -0.05:
+                    st.warning(f"⚠️ **{op1}** overvalued by {abs(diff1)*100:.1f}%")
+                if diff2 > 0.05:
+                    st.success(f"✅ **{op2}** undervalued — edge +{diff2*100:.1f}%")
+                elif diff2 < -0.05:
+                    st.warning(f"⚠️ **{op2}** overvalued by {abs(diff2)*100:.1f}%")
+                if abs(diff1) <= 0.05 and abs(diff2) <= 0.05:
+                    st.info("No significant edge detected.")
 
-    col1, col2 = st.columns(2)
-    with col1: odds1 = st.number_input(f"{op1} odds", value=-150, key="o1")
-    with col2: odds2 = st.number_input(f"{op2} odds", value=120,  key="o2")
+    # ======== TAB 4 ========
+    with tab4:
+        st.subheader("👤 Player Profile")
+        search = st.selectbox("Search player", all_players, key="search")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        of1 = st.number_input("Matches last 14 days", 0, 15, 0, key="of1")
-        or1 = st.number_input("Days rest", 0, 365, 3, key="orr1")
-        oi1 = st.checkbox(f"{op1} injured", key="oi1")
-    with col2:
-        of2 = st.number_input("Matches last 14 days", 0, 15, 0, key="of2")
-        or2 = st.number_input("Days rest", 0, 365, 3, key="orr2")
-        oi2 = st.checkbox(f"{op2} injured", key="oi2")
+        if search:
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Overall Elo", f"{model_elo.get_rating(search):.0f}")
+            col2.metric("Hard Elo",    f"{model_elo.get_rating(search, 'Hard'):.0f}")
+            col3.metric("Clay Elo",    f"{model_elo.get_rating(search, 'Clay'):.0f}")
+            col4.metric("Grass Elo",   f"{model_elo.get_rating(search, 'Grass'):.0f}")
 
-    if st.button("Find Value", type="primary"):
-        if op1 == op2:
-            st.error("Select two different players.")
-        else:
-            prob, _ = get_prediction(
-                op1, op2, osurf, obo, oround, "Unknown",
-                of1, of2, or1, or2, oi1, oi2, 20, 10, "Outdoor",
-                model_elo, clfs, feature_cols, scaler,
-                match_history, surface_history, h2h_record, h2h_surface,
-                h2h_recent, serve_history, ace_history, df_history,
-                bp_history, upset_history, rank_history, tourney_history,
-                round_history, dominance_history, tb_history,
-                player_types, all_surfaces
-            )
-            imp1  = implied_prob(odds1)
-            imp2  = implied_prob(odds2)
-            diff1 = prob - imp1
-            diff2 = (1-prob) - imp2
+            wr  = compute_recent_win_rate(search, match_history)
+            mom = compute_momentum(search, match_history)
+            sv  = compute_serve_score(search, serve_history)
+            ac  = compute_serve_score(search, ace_history)
+            up  = compute_upset_rate(search, upset_history)
+            rt  = compute_rank_trajectory(search, rank_history)
+            st_ = compute_streak(search, match_history)
+            dom = compute_dominance(search, dominance_history)
+            tb  = compute_tiebreak_rate(search, tb_history)
+            pt  = player_types.get(search, 0)
 
-            col1, col2 = st.columns(2)
-            with col1: st.metric(op1, f"Model: {prob*100:.1f}%", delta=f"Vegas: {imp1*100:.1f}%")
-            with col2: st.metric(op2, f"Model: {(1-prob)*100:.1f}%", delta=f"Vegas: {imp2*100:.1f}%")
+            st.info(f"Player type: **{PT_LABELS.get(pt, 'Unknown')}**")
 
-            if diff1 > 0.05:
-                st.success(f"✅ **{op1}** undervalued — edge +{diff1*100:.1f}%")
-            elif diff1 < -0.05:
-                st.warning(f"⚠️ **{op1}** overvalued by {abs(diff1)*100:.1f}%")
-            if diff2 > 0.05:
-                st.success(f"✅ **{op2}** undervalued — edge +{diff2*100:.1f}%")
-            elif diff2 < -0.05:
-                st.warning(f"⚠️ **{op2}** overvalued by {abs(diff2)*100:.1f}%")
-            if abs(diff1) <= 0.05 and abs(diff2) <= 0.05:
-                st.info("No significant edge detected.")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Win Rate",    f"{wr*100:.1f}%")
+            col2.metric("Momentum",    f"{mom*100:.1f}%")
+            col3.metric("Dominance",   f"{dom*100:.1f}%")
+            col4.metric("Tiebreak %",  f"{tb*100:.1f}%")
 
-# ======== TAB 4 ========
-with tab4:
-    st.subheader("👤 Player Profile")
-    search = st.selectbox("Search player", all_players, key="search")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Serve %",     f"{sv*100:.1f}%")
+            col2.metric("Ace Rate",    f"{ac*100:.1f}%")
+            col3.metric("Upset Rate",  f"{up*100:.1f}%")
+            col4.metric("Streak",      f"{st_:+d}")
 
-    if search:
+            round_labels = {1:"R128",2:"R64",3:"R32",4:"R16",5:"QF",6:"SF",7:"F"}
+            round_data   = {round_labels[r]: compute_round_win_rate(search, round_history, r)*100 for r in range(1,8)}
+            st.subheader("Win rate by round")
+            st.bar_chart(round_data)
+
+            st.subheader("Head to head")
+            vs = st.selectbox("Compare vs", [p for p in all_players if p != search], key="vs")
+            if vs:
+                col1, col2, col3, col4, col5 = st.columns(5)
+                col1.metric("Overall", f"{compute_h2h(search, vs, h2h_record)*100:.1f}%")
+                col2.metric("Hard",    f"{compute_surface_h2h(search, vs, 'Hard',  h2h_surface)*100:.1f}%")
+                col3.metric("Clay",    f"{compute_surface_h2h(search, vs, 'Clay',  h2h_surface)*100:.1f}%")
+                col4.metric("Grass",   f"{compute_surface_h2h(search, vs, 'Grass', h2h_surface)*100:.1f}%")
+                col5.metric("Recent",  f"{compute_recent_h2h(search, vs, h2h_recent)*100:.1f}%")
+
+    # ======== TAB 5 ========
+    with tab5:
+        st.subheader("📈 Backtest Report")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Overall Elo", f"{model_elo.get_rating(search):.0f}")
-        col2.metric("Hard Elo",    f"{model_elo.get_rating(search, 'Hard'):.0f}")
-        col3.metric("Clay Elo",    f"{model_elo.get_rating(search, 'Clay'):.0f}")
-        col4.metric("Grass Elo",   f"{model_elo.get_rating(search, 'Grass'):.0f}")
+        col1.metric("Single Model",      f"{backtest_acc*100:.1f}%")
+        col2.metric("Ensemble",          f"{ensemble_acc*100:.1f}%")
+        col3.metric("Baseline",          "~65.0%")
+        col4.metric("Edge over baseline", f"+{(ensemble_acc-0.65)*100:.1f}%")
 
-        wr  = compute_recent_win_rate(search, match_history)
-        mom = compute_momentum(search, match_history)
-        sv  = compute_serve_score(search, serve_history)
-        ac  = compute_serve_score(search, ace_history)
-        up  = compute_upset_rate(search, upset_history)
-        rt  = compute_rank_trajectory(search, rank_history)
-        st_ = compute_streak(search, match_history)
-        dom = compute_dominance(search, dominance_history)
-        tb  = compute_tiebreak_rate(search, tb_history)
-        pt  = player_types.get(search, 0)
+        st.subheader("By confidence tier")
+        tier_stats = test_df.groupby("tier").agg(
+            Predictions=("correct","count"),
+            Accuracy=("correct","mean")
+        ).reset_index()
+        tier_stats["Accuracy"] = (tier_stats["Accuracy"]*100).round(1).astype(str) + "%"
+        st.dataframe(tier_stats, use_container_width=True)
 
-        st.info(f"Player type: **{PT_LABELS.get(pt, 'Unknown')}**")
+        st.subheader("By surface")
+        surf_stats = test_df.groupby("surface").agg(
+            Predictions=("correct","count"),
+            Accuracy=("correct","mean")
+        ).reset_index()
+        surf_stats["Accuracy"] = (surf_stats["Accuracy"]*100).round(1).astype(str) + "%"
+        st.dataframe(surf_stats, use_container_width=True)
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Win Rate",    f"{wr*100:.1f}%")
-        col2.metric("Momentum",    f"{mom*100:.1f}%")
-        col3.metric("Dominance",   f"{dom*100:.1f}%")
-        col4.metric("Tiebreak %",  f"{tb*100:.1f}%")
+        st.subheader("Feature importance")
+        try:
+            imp = clfs["gb"].calibrated_classifiers_[0].estimator.feature_importances_
+            fi  = pd.DataFrame({"Feature": X_train.columns, "Importance": imp})
+            fi  = fi.sort_values("Importance", ascending=False).head(15)
+            st.bar_chart(fi.set_index("Feature"))
+        except:
+            st.info("Feature importance chart unavailable.")
 
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Serve %",     f"{sv*100:.1f}%")
-        col2.metric("Ace Rate",    f"{ac*100:.1f}%")
-        col3.metric("Upset Rate",  f"{up*100:.1f}%")
-        col4.metric("Streak",      f"{st_:+d}")
+    # ======== TAB 6 ========
+    with tab6:
+        st.subheader("📋 Track Record")
 
-        round_labels = {1:"R128",2:"R64",3:"R32",4:"R16",5:"QF",6:"SF",7:"F"}
-        round_data   = {round_labels[r]: compute_round_win_rate(search, round_history, r)*100 for r in range(1,8)}
-        st.subheader("Win rate by round")
-        st.bar_chart(round_data)
-
-        st.subheader("Head to head")
-        vs = st.selectbox("Compare vs", [p for p in all_players if p != search], key="vs")
-        if vs:
-            col1, col2, col3, col4, col5 = st.columns(5)
-            col1.metric("Overall", f"{compute_h2h(search, vs, h2h_record)*100:.1f}%")
-            col2.metric("Hard",    f"{compute_surface_h2h(search, vs, 'Hard',  h2h_surface)*100:.1f}%")
-            col3.metric("Clay",    f"{compute_surface_h2h(search, vs, 'Clay',  h2h_surface)*100:.1f}%")
-            col4.metric("Grass",   f"{compute_surface_h2h(search, vs, 'Grass', h2h_surface)*100:.1f}%")
-            col5.metric("Recent",  f"{compute_recent_h2h(search, vs, h2h_recent)*100:.1f}%")
-
-# ======== TAB 5 ========
-with tab5:
-    st.subheader("📈 Backtest Report")
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Single Model",      f"{backtest_acc*100:.1f}%")
-    col2.metric("Ensemble",          f"{ensemble_acc*100:.1f}%")
-    col3.metric("Baseline",          "~65.0%")
-    col4.metric("Edge over baseline", f"+{(ensemble_acc-0.65)*100:.1f}%")
-
-    st.subheader("By confidence tier")
-    tier_stats = test_df.groupby("tier").agg(
-        Predictions=("correct","count"),
-        Accuracy=("correct","mean")
-    ).reset_index()
-    tier_stats["Accuracy"] = (tier_stats["Accuracy"]*100).round(1).astype(str) + "%"
-    st.dataframe(tier_stats, use_container_width=True)
-
-    st.subheader("By surface")
-    surf_stats = test_df.groupby("surface").agg(
-        Predictions=("correct","count"),
-        Accuracy=("correct","mean")
-    ).reset_index()
-    surf_stats["Accuracy"] = (surf_stats["Accuracy"]*100).round(1).astype(str) + "%"
-    st.dataframe(surf_stats, use_container_width=True)
-
-    st.subheader("Feature importance")
-    try:
-        imp = clfs["gb"].calibrated_classifiers_[0].estimator.feature_importances_
-        fi  = pd.DataFrame({"Feature": X_train.columns, "Importance": imp})
-        fi  = fi.sort_values("Importance", ascending=False).head(15)
-        st.bar_chart(fi.set_index("Feature"))
-    except:
-        st.info("Feature importance chart unavailable.")
-
-# ======== TAB 6 ========
-with tab6:
-    st.subheader("📋 Track Record")
-
-    if "track_record" not in st.session_state:
-        st.session_state.track_record = []
-
-    with st.form("log_pred"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            t_date = st.date_input("Date",    key="td")
-            t_p1   = st.selectbox("Player 1", all_players, key="tp1")
-            t_p2   = st.selectbox("Player 2", all_players, index=1, key="tp2")
-        with c2:
-            t_surf    = st.selectbox("Surface", ["Hard","Clay","Grass"], key="tsurf")
-            t_tourney = st.text_input("Tournament", key="tt")
-            t_pick    = st.selectbox("Your pick", ["Player 1","Player 2"], key="tpick")
-        with c3:
-            t_conf   = st.number_input("Confidence %", 50.0, 100.0, 65.0, key="tc")
-            t_result = st.selectbox("Result", ["Pending","Correct","Wrong"], key="tr")
-            t_odds   = st.number_input("Vegas odds", value=-110, key="to")
-
-        if st.form_submit_button("Log") and t_p1 != t_p2:
-            st.session_state.track_record.append({
-                "Date":       str(t_date),
-                "Player 1":   t_p1,
-                "Player 2":   t_p2,
-                "Surface":    t_surf,
-                "Tournament": t_tourney,
-                "Pick":       t_p1 if t_pick == "Player 1" else t_p2,
-                "Confidence": f"{t_conf:.1f}%",
-                "Tier":       confidence_tier(t_conf),
-                "Odds":       t_odds,
-                "Result":     t_result,
-            })
-
-    if st.session_state.track_record:
-        df_track = pd.DataFrame(st.session_state.track_record)
-        st.dataframe(df_track, use_container_width=True)
-
-        decided = df_track[df_track["Result"] != "Pending"]
-        if len(decided) > 0:
-            correct = (decided["Result"] == "Correct").sum()
-            total   = len(decided)
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total",    total)
-            col2.metric("Correct",  correct)
-            col3.metric("Accuracy", f"{correct/total*100:.1f}%")
-
-            for tier_label in ["🟢 High", "🟡 Medium"]:
-                tier_df = decided[decided["Tier"] == tier_label]
-                if len(tier_df) > 0:
-                    acc = (tier_df["Result"] == "Correct").mean() * 100
-                    st.metric(f"{tier_label} confidence accuracy", f"{acc:.1f}%")
-
-        csv = df_track.to_csv(index=False)
-        st.download_button("📥 Export CSV", csv, "track_record.csv", "text/csv")
-        if st.button("Clear all"):
+        if "track_record" not in st.session_state:
             st.session_state.track_record = []
-            st.rerun()
-    else:
-        st.info("No predictions logged yet.")
+
+        with st.form("log_pred"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                t_date = st.date_input("Date",    key="td")
+                t_p1   = st.selectbox("Player 1", all_players, key="tp1")
+                t_p2   = st.selectbox("Player 2", all_players, index=1, key="tp2")
+            with c2:
+                t_surf    = st.selectbox("Surface", ["Hard","Clay","Grass"], key="tsurf")
+                t_tourney = st.text_input("Tournament", key="tt")
+                t_pick    = st.selectbox("Your pick", ["Player 1","Player 2"], key="tpick")
+            with c3:
+                t_conf   = st.number_input("Confidence %", 50.0, 100.0, 65.0, key="tc")
+                t_result = st.selectbox("Result", ["Pending","Correct","Wrong"], key="tr")
+                t_odds   = st.number_input("Vegas odds", value=-110, key="to")
+
+            if st.form_submit_button("Log") and t_p1 != t_p2:
+                st.session_state.track_record.append({
+                    "Date":       str(t_date),
+                    "Player 1":   t_p1,
+                    "Player 2":   t_p2,
+                    "Surface":    t_surf,
+                    "Tournament": t_tourney,
+                    "Pick":       t_p1 if t_pick == "Player 1" else t_p2,
+                    "Confidence": f"{t_conf:.1f}%",
+                    "Tier":       confidence_tier(t_conf),
+                    "Odds":       t_odds,
+                    "Result":     t_result,
+                })
+
+        if st.session_state.track_record:
+            df_track = pd.DataFrame(st.session_state.track_record)
+            st.dataframe(df_track, use_container_width=True)
+
+            decided = df_track[df_track["Result"] != "Pending"]
+            if len(decided) > 0:
+                correct = (decided["Result"] == "Correct").sum()
+                total   = len(decided)
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Total",    total)
+                col2.metric("Correct",  correct)
+                col3.metric("Accuracy", f"{correct/total*100:.1f}%")
+
+                for tier_label in ["🟢 High", "🟡 Medium"]:
+                    tier_df = decided[decided["Tier"] == tier_label]
+                    if len(tier_df) > 0:
+                        acc = (tier_df["Result"] == "Correct").mean() * 100
+                        st.metric(f"{tier_label} confidence accuracy", f"{acc:.1f}%")
+
+            csv = df_track.to_csv(index=False)
+            st.download_button("📥 Export CSV", csv, "track_record.csv", "text/csv")
+            if st.button("Clear all"):
+                st.session_state.track_record = []
+                st.rerun()
+        else:
+            st.info("No predictions logged yet.")
