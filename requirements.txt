@@ -5,3 +5,4 @@ scikit-learn
 requests
 plotly
 google-generativeai
+pip install lightgbm
