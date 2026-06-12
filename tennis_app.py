@@ -21,7 +21,6 @@ try:
     artifacts = load_model_artifacts()
     all_players = artifacts["all_players"]
     model_elo = artifacts["model_elo"]
-    all_surfaces = artifacts["all_surfaces"]
 except FileNotFoundError:
     st.error("🚨 Could not find 'tennis_model_artifacts.pkl'.")
     st.info("Please run `python3 train_final.py` in your terminal first to generate the model!")
@@ -53,6 +52,7 @@ with col2:
 
 st.divider()
 
+# Hardcoded clean surfaces to avoid "nan" and "Carpet"
 surface = st.selectbox("Select Court Surface", ["Hard", "Clay", "Grass"])
 
 # --- 3. PREDICTION ENGINE ---
@@ -61,13 +61,17 @@ if st.button("🔮 Predict Match Outcome", use_container_width=True):
         st.warning("Please select two different players to simulate a match.")
     else:
         with st.spinner("Analyzing matchup..."):
-            # Using the fast Elo rating system from your artifacts for instant calculation
-            # It factors in the specific court surface (Hard, Clay, Grass, etc.)
-            r1 = model_elo.get_rating(p1, surface)
-            r2 = model_elo.get_rating(p2, surface)
+            # Get Overall Base Ratings
+            r1_base = model_elo.get_rating(p1)
+            r2_base = model_elo.get_rating(p2)
             
-            # Calculate win probability 
-            p1_win_prob = model_elo.expected_score(r1, r2)            
+            # Get Surface-Specific Ratings
+            r1_surf = model_elo.get_rating(p1, surface)
+            r2_surf = model_elo.get_rating(p2, surface)
+            
+            # Calculate win probability (Proper order!)
+            p1_win_prob = model_elo.expected_score(r1_surf, r2_surf)
+            
             st.subheader("Prediction Results")
             if p1_win_prob > 0.5:
                 st.success(f"🏆 **Predicted Winner:** {p1}")
@@ -75,3 +79,31 @@ if st.button("🔮 Predict Match Outcome", use_container_width=True):
             else:
                 st.success(f"🏆 **Predicted Winner:** {p2}")
                 st.metric(label=f"{p2} Win Probability", value=f"{(1 - p1_win_prob) * 100:.1f}%")
+
+            # --- 4. DETAILED BREAKDOWN DASHBOARD ---
+            st.divider()
+            st.subheader("📊 Detailed Matchup Breakdown")
+            
+            # Base Ratings Row
+            st.markdown("**Overall Base Rating** (All surfaces)")
+            c1, c2 = st.columns(2)
+            c1.metric(label=p1, value=f"{int(r1_base)}")
+            c2.metric(label=p2, value=f"{int(r2_base)}")
+            
+            st.markdown("<br>", unsafe_allow_html=True) # Adds a little spacing
+            
+            # Surface Ratings Row
+            st.markdown(f"**{surface} Court Rating** (Adjusted for surface skill)")
+            c3, c4 = st.columns(2)
+            
+            # Calculate how much their rating changes based on the surface
+            p1_adj = int(r1_surf - r1_base)
+            p2_adj = int(r2_surf - r2_base)
+            
+            c3.metric(label=p1, value=f"{int(r1_surf)}", delta=p1_adj, delta_color="normal")
+            c4.metric(label=p2, value=f"{int(r2_surf)}", delta=p2_adj, delta_color="normal")
+            
+            # Final Analysis Text
+            diff = abs(int(r1_surf) - int(r2_surf))
+            favored = p1 if r1_surf > r2_surf else p2
+            st.info(f"💡 **The Math:** On {surface} courts, {favored} holds a **{diff}-point Elo advantage**. The machine learning model uses this exact differential to calculate the final win probability!")
