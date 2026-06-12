@@ -1,8 +1,4 @@
-google-generativeai
-joblib
 streamlit
 pandas
 numpy
 scikit-learn
-plotly
-requests

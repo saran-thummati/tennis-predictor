@@ -1,9 +1,15 @@
 import streamlit as st
 import pandas as pd
 import joblib
+
+# --- FIX: Teach the app what an EloModel is before opening the file ---
 import __main__
-from train_final import EloModel
-__main__.EloModel = EloModel
+try:
+    from train_final import EloModel
+    __main__.EloModel = EloModel
+except ImportError:
+    st.error("🚨 Could not find 'train_final.py'. Make sure it is in the exact same folder as this app!")
+    st.stop()
 
 # --- 1. LOAD THE SAVED BRAIN INSTANTLY ---
 @st.cache_resource
@@ -14,12 +20,14 @@ def load_model_artifacts():
 try:
     artifacts = load_model_artifacts()
     all_players = artifacts["all_players"]
-    clfs = artifacts["clfs"]
     model_elo = artifacts["model_elo"]
     all_surfaces = artifacts["all_surfaces"]
 except FileNotFoundError:
     st.error("🚨 Could not find 'tennis_model_artifacts.pkl'.")
     st.info("Please run `python3 train_final.py` in your terminal first to generate the model!")
+    st.stop()
+except Exception as e:
+    st.error(f"🚨 An error occurred loading the model: {e}")
     st.stop()
 
 # --- 2. APP LAYOUT & UI ---
@@ -54,8 +62,9 @@ if st.button("🔮 Predict Match Outcome", use_container_width=True):
     else:
         with st.spinner("Analyzing matchup..."):
             # Using the fast Elo rating system from your artifacts for instant calculation
-            r1 = model_elo.get_rating(p1)
-            r2 = model_elo.get_rating(p2)
+            # It factors in the specific court surface (Hard, Clay, Grass, etc.)
+            r1 = model_elo.get_rating(p1, surface)
+            r2 = model_elo.get_rating(p2, surface)
             
             # Calculate win probability 
             p1_win_prob = model_elo.expected_score(r2, r1)
