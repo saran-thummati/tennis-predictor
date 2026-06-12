@@ -64,19 +64,6 @@ def round_to_num(round_str):
     mapping = {"R128": 1, "R64": 2, "R32": 3, "R16": 4, "QF": 5, "SF": 6, "F": 7, "RR": 3}
     return mapping.get(str(round_str), 3)
 
-def compute_serve_score(player, serve_history, n=10):
-    recent = serve_history[player][-n:]
-    return sum(recent) / len(recent) if recent else 0.5
-
-def compute_upset_rate(player, upset_history):
-    total = upset_history[player]["total"]
-    wins  = upset_history[player]["wins"]
-    return wins / total if total > 0 else 0.5
-
-def compute_dominance(player, dominance_history, n=10):
-    recent = dominance_history[player][-n:]
-    return sum(recent) / len(recent) if recent else 0.5
-
 def build_and_train():
     print("STARTING MODEL TRAINING PROCESS")
     print("Downloading historical data (2015-2025)...")
@@ -115,8 +102,7 @@ def build_and_train():
         "p1_win":        np.where(flip, 0, 1),
     })
 
-    records          = []
-    model_elo        = EloModel()
+    model_elo = EloModel()
     
     print("Building features...")
     clean_records = df_clean.to_dict('records')
@@ -146,3 +132,4 @@ if __name__ == "__main__":
         print("Training complete. Saving artifacts to disk...")
         joblib.dump(artifacts, "tennis_model_artifacts.pkl")
         print("SUCCESS! You can now run your Streamlit app.")
+        
