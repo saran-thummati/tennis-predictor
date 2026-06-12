@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
 import numpy as np
 from datetime import datetime, timedelta
 from collections import defaultdict # Required for EloModel
