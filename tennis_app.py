@@ -53,7 +53,7 @@ with col2:
 
 st.divider()
 
-surface = st.selectbox("Select Court Surface", all_surfaces)
+surface = st.selectbox("Select Court Surface", ["Hard", "Clay", "Grass"])
 
 # --- 3. PREDICTION ENGINE ---
 if st.button("🔮 Predict Match Outcome", use_container_width=True):
