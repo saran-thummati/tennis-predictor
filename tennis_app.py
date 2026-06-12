@@ -67,8 +67,7 @@ if st.button("🔮 Predict Match Outcome", use_container_width=True):
             r2 = model_elo.get_rating(p2, surface)
             
             # Calculate win probability 
-            p1_win_prob = model_elo.expected_score(r2, r1)
-            
+            p1_win_prob = model_elo.expected_score(r1, r2)            
             st.subheader("Prediction Results")
             if p1_win_prob > 0.5:
                 st.success(f"🏆 **Predicted Winner:** {p1}")
