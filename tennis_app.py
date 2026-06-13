@@ -2,74 +2,52 @@ import streamlit as st
 import pandas as pd
 import joblib
 
-# --- FIX: Teach the app what an EloModel is before opening the file ---
+# --- FIX: Teach the app what an EloModel is ---
 import __main__
 try:
     from train_final import EloModel
     __main__.EloModel = EloModel
 except ImportError:
-    st.error("🚨 Could not find 'train_final.py'. Make sure it is in the exact same folder as this app!")
+    st.error("🚨 Could not find 'train_final.py'.")
     st.stop()
 
-# --- 1. LOAD THE SAVED BRAIN INSTANTLY ---
 @st.cache_resource
 def load_model_artifacts():
     return joblib.load("tennis_model_artifacts.pkl")
 
-# Handle the case where the training script hasn't been run yet
 try:
     artifacts = load_model_artifacts()
     all_players = artifacts["all_players"]
     model_elo = artifacts["model_elo"]
+    player_stats = artifacts.get("player_stats", {})
 except FileNotFoundError:
     st.error("🚨 Could not find 'tennis_model_artifacts.pkl'.")
-    st.info("Please run `python3 train_final.py` in your terminal first to generate the model!")
-    st.stop()
-except Exception as e:
-    st.error(f"🚨 An error occurred loading the model: {e}")
     st.stop()
 
-# --- 2. APP LAYOUT & UI ---
+# --- APP LAYOUT ---
 st.set_page_config(page_title="Tennis Match Predictor", page_icon="🎾", layout="centered")
-
 st.title("🎾 Pro Tennis Match Predictor")
-st.markdown("Select two players and a court surface to predict the outcome using our fast, pre-trained machine learning model.")
-
 st.divider()
 
-# Layout using columns for a clean look
 col1, col2 = st.columns(2)
-
 with col1:
-    st.subheader("Player 1")
     p1 = st.selectbox("Select First Player", all_players, key="p1")
-
 with col2:
-    st.subheader("Player 2")
-    # Default player 2 to a different player if possible
     default_p2_idx = 1 if len(all_players) > 1 else 0
     p2 = st.selectbox("Select Second Player", all_players, index=default_p2_idx, key="p2")
 
 st.divider()
-
-# Hardcoded clean surfaces to avoid "nan" and "Carpet"
 surface = st.selectbox("Select Court Surface", ["Hard", "Clay", "Grass"])
 
-# --- 3. PREDICTION ENGINE ---
+# --- PREDICTION ENGINE ---
 if st.button("🔮 Predict Match Outcome", use_container_width=True):
     if p1 == p2:
         st.warning("Please select two different players to simulate a match.")
     else:
         with st.spinner("Analyzing matchup..."):
-            # Get Overall Base Ratings
-            r1_base = model_elo.get_rating(p1)
-            r2_base = model_elo.get_rating(p2)
+            r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
+            r1_surf, r2_surf = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
             
-            # Get Surface-Specific Ratings
-            r1_surf = model_elo.get_rating(p1, surface)
-            r2_surf = model_elo.get_rating(p2, surface)
-            
-            # Calculate win probability (Proper order!)
             p1_win_prob = model_elo.expected_score(r1_surf, r2_surf)
             
             st.subheader("Prediction Results")
@@ -80,30 +58,49 @@ if st.button("🔮 Predict Match Outcome", use_container_width=True):
                 st.success(f"🏆 **Predicted Winner:** {p2}")
                 st.metric(label=f"{p2} Win Probability", value=f"{(1 - p1_win_prob) * 100:.1f}%")
 
-            # --- 4. DETAILED BREAKDOWN DASHBOARD ---
             st.divider()
-            st.subheader("📊 Detailed Matchup Breakdown")
             
-            # Base Ratings Row
-            st.markdown("**Overall Base Rating** (All surfaces)")
-            c1, c2 = st.columns(2)
-            c1.metric(label=p1, value=f"{int(r1_base)}")
-            c2.metric(label=p2, value=f"{int(r2_base)}")
+            # --- STATS DASHBOARD ---
+            st.subheader("📈 Career Statistics (2015-2025)")
+            s1 = player_stats.get(p1, {"matches": 0, "win_rate": 0, "avg_dom": 50})
+            s2 = player_stats.get(p2, {"matches": 0, "win_rate": 0, "avg_dom": 50})
             
-            st.markdown("<br>", unsafe_allow_html=True) # Adds a little spacing
+            stat_col1, stat_col2 = st.columns(2)
+            with stat_col1:
+                st.markdown(f"**{p1}**")
+                st.write(f"🎾 **Matches Played:** {s1['matches']}")
+                st.write(f"🏆 **Win Rate:** {s1['win_rate']}%")
+                st.write(f"🔥 **Game Dominance:** {s1['avg_dom']}%")
+                
+            with stat_col2:
+                st.markdown(f"**{p2}**")
+                st.write(f"🎾 **Matches Played:** {s2['matches']}")
+                st.write(f"🏆 **Win Rate:** {s2['win_rate']}%")
+                st.write(f"🔥 **Game Dominance:** {s2['avg_dom']}%")
+
+            st.divider()
+
+            # --- TRANSPARENT ELO BREAKDOWN ---
+            st.subheader("🤖 Inside the Algorithm")
+            st.markdown("Machine learning doesn't have to be a black box. Here is the exact math the model used to predict this match.")
             
-            # Surface Ratings Row
-            st.markdown(f"**{surface} Court Rating** (Adjusted for surface skill)")
+            st.markdown(f"### Step 1: Calculate {surface} Court Ratings")
+            st.markdown(f"The model takes their career base rating and applies a modifier based on their historical dominance specifically on **{surface}** courts.")
+            
+            r1_modifier = int(r1_surf - r1_base)
+            r2_modifier = int(r2_surf - r2_base)
+            
             c3, c4 = st.columns(2)
+            c3.metric(label=f"{p1} Final Rating", value=f"{int(r1_surf)}", delta=f"{r1_modifier} {surface} modifier")
+            c4.metric(label=f"{p2} Final Rating", value=f"{int(r2_surf)}", delta=f"{r2_modifier} {surface} modifier")
             
-            # Calculate how much their rating changes based on the surface
-            p1_adj = int(r1_surf - r1_base)
-            p2_adj = int(r2_surf - r2_base)
+            st.markdown("### Step 2: The Probability Formula")
+            st.markdown("The algorithm plugs those final ratings into the standard Elo probability fraction:")
             
-            c3.metric(label=p1, value=f"{int(r1_surf)}", delta=p1_adj, delta_color="normal")
-            c4.metric(label=p2, value=f"{int(r2_surf)}", delta=p2_adj, delta_color="normal")
+            # Draws the algebraic formula beautifully on the screen
+            st.latex(r"P(Win) = \frac{1}{1 + 10^{(Rating_2 - Rating_1) / 400}}")
             
-            # Final Analysis Text
-            diff = abs(int(r1_surf) - int(r2_surf))
-            favored = p1 if r1_surf > r2_surf else p2
-            st.info(f"💡 **The Math:** On {surface} courts, {favored} holds a **{diff}-point Elo advantage**. The machine learning model uses this exact differential to calculate the final win probability!")
+            st.markdown("Plugging in the numbers for this exact match:")
+            st.latex(fr"P({p1}) = \frac{{1}}{{1 + 10^{{({int(r2_surf)} - {int(r1_surf)}) / 400}}}}")
+            
+            st.info(f"💡 Solving this fraction gives {p1} a **{p1_win_prob * 100:.1f}%** chance of winning, exactly as predicted above!")
