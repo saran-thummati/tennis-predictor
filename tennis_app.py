@@ -1,106 +1,134 @@
-import streamlit as st
 import pandas as pd
+import numpy as np
+from collections import defaultdict
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier, HistGradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 import joblib
+import warnings
+import ssl
 
-# --- FIX: Teach the app what an EloModel is ---
-import __main__
-try:
-    from train_final import EloModel
-    __main__.EloModel = EloModel
-except ImportError:
-    st.error("🚨 Could not find 'train_final.py'.")
-    st.stop()
+# --- BULLETPROOF MAC SSL BYPASS ---
+ssl._create_default_https_context = ssl._create_unverified_context
+warnings.filterwarnings('ignore')
 
-@st.cache_resource
-def load_model_artifacts():
-    return joblib.load("tennis_model_artifacts.pkl")
+class EloModel:
+    def __init__(self, initial_rating=1500):
+        self.initial_rating  = initial_rating
+        self.ratings         = {}
+        self.surface_ratings = {}
+        self.match_counts    = defaultdict(int)
 
-try:
-    artifacts = load_model_artifacts()
-    all_players = artifacts["all_players"]
-    model_elo = artifacts["model_elo"]
-    player_stats = artifacts.get("player_stats", {})
-except FileNotFoundError:
-    st.error("🚨 Could not find 'tennis_model_artifacts.pkl'.")
-    st.stop()
+    def get_rating(self, player, surface=None):
+        base = self.initial_rating
+        if surface: raw = self.surface_ratings.setdefault(surface, {}).get(player, base)
+        else: raw = self.ratings.get(player, base)
+        n = self.match_counts[player]
+        decay = 0.999 ** max(0, 50 - n)
+        return base + (raw - base) * decay
 
-# --- APP LAYOUT ---
-st.set_page_config(page_title="Tennis Match Predictor", page_icon="🎾", layout="centered")
-st.title("🎾 Pro Tennis Match Predictor")
-st.divider()
+    def expected_score(self, r1, r2):
+        return 1 / (1 + 10 ** ((r2 - r1) / 400))
 
-col1, col2 = st.columns(2)
-with col1:
-    p1 = st.selectbox("Select First Player", all_players, key="p1")
-with col2:
-    default_p2_idx = 1 if len(all_players) > 1 else 0
-    p2 = st.selectbox("Select Second Player", all_players, index=default_p2_idx, key="p2")
+    def update(self, p1, p2, p1_win, dom_ratio, surface=None, k=32):
+        margin_mult = max(0.5, min(1.5, (dom_ratio - 0.5) * 3 + 0.8))
+        k_adj = k * margin_mult
+        r1, r2 = self.get_rating(p1), self.get_rating(p2)
+        exp1   = self.expected_score(r1, r2)
+        self.ratings[p1] = r1 + k_adj * (p1_win - exp1)
+        self.ratings[p2] = r2 + k_adj * ((1 - p1_win) - (1 - exp1))
+        self.match_counts[p1] += 1
+        self.match_counts[p2] += 1
+        if surface:
+            sr1 = self.get_rating(p1, surface)
+            sr2 = self.get_rating(p2, surface)
+            exp_s = self.expected_score(sr1, sr2)
+            self.surface_ratings[surface][p1] = sr1 + k_adj * (p1_win - exp_s)
+            self.surface_ratings[surface][p2] = sr2 + k_adj * ((1 - p1_win) - (1 - exp_s))
 
-st.divider()
-surface = st.selectbox("Select Court Surface", ["Hard", "Clay", "Grass"])
+def parse_score(score_str):
+    try:
+        sets = str(score_str).split()
+        w_games = l_games = 0
+        for s in sets:
+            parts = s.replace("(", " ").replace(")", "").split("-")
+            if len(parts) >= 2:
+                w_games += int(parts[0])
+                l_games += int(parts[1].split()[0])
+        total = w_games + l_games
+        return w_games / total if total > 0 else 0.5
+    except: return 0.5
 
-# --- PREDICTION ENGINE ---
-if st.button("🔮 Predict Match Outcome", use_container_width=True):
-    if p1 == p2:
-        st.warning("Please select two different players to simulate a match.")
-    else:
-        with st.spinner("Analyzing matchup..."):
-            r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
-            r1_surf, r2_surf = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
-            
-            p1_win_prob = model_elo.expected_score(r1_surf, r2_surf)
-            
-            st.subheader("Prediction Results")
-            if p1_win_prob > 0.5:
-                st.success(f"🏆 **Predicted Winner:** {p1}")
-                st.metric(label=f"{p1} Win Probability", value=f"{p1_win_prob * 100:.1f}%")
-            else:
-                st.success(f"🏆 **Predicted Winner:** {p2}")
-                st.metric(label=f"{p2} Win Probability", value=f"{(1 - p1_win_prob) * 100:.1f}%")
+def round_to_num(round_str):
+    mapping = {"R128": 1, "R64": 2, "R32": 3, "R16": 4, "QF": 5, "SF": 6, "F": 7, "RR": 3}
+    return mapping.get(str(round_str), 3)
 
-            st.divider()
-            
-            # --- STATS DASHBOARD ---
-            st.subheader("📈 Career Statistics (2015-2025)")
-            s1 = player_stats.get(p1, {"matches": 0, "win_rate": 0, "avg_dom": 50})
-            s2 = player_stats.get(p2, {"matches": 0, "win_rate": 0, "avg_dom": 50})
-            
-            stat_col1, stat_col2 = st.columns(2)
-            with stat_col1:
-                st.markdown(f"**{p1}**")
-                st.write(f"🎾 **Matches Played:** {s1['matches']}")
-                st.write(f"🏆 **Win Rate:** {s1['win_rate']}%")
-                st.write(f"🔥 **Game Dominance:** {s1['avg_dom']}%")
-                
-            with stat_col2:
-                st.markdown(f"**{p2}**")
-                st.write(f"🎾 **Matches Played:** {s2['matches']}")
-                st.write(f"🏆 **Win Rate:** {s2['win_rate']}%")
-                st.write(f"🔥 **Game Dominance:** {s2['avg_dom']}%")
+def build_and_train():
+    print("STARTING MODEL TRAINING PROCESS")
+    print("Downloading historical data (2015-2025)...")
+    years = range(2015, 2026)
+    frames = []
+    for year in years:
+        url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv"
+        try: frames.append(pd.read_csv(url, low_memory=False))
+        except: continue
 
-            st.divider()
+    frames = [f for f in frames if f is not None and not f.empty]
+    
+    if len(frames) == 0:
+        print("Error: No data sheets could be downloaded. Check your internet connection!")
+        return
 
-            # --- TRANSPARENT ELO BREAKDOWN ---
-            st.subheader("🤖 Inside the Algorithm")
-            st.markdown("Machine learning doesn't have to be a black box. Here is the exact math the model used to predict this match.")
-            
-            st.markdown(f"### Step 1: Calculate {surface} Court Ratings")
-            st.markdown(f"The model takes their career base rating and applies a modifier based on their historical dominance specifically on **{surface}** courts.")
-            
-            r1_modifier = int(r1_surf - r1_base)
-            r2_modifier = int(r2_surf - r2_base)
-            
-            c3, c4 = st.columns(2)
-            c3.metric(label=f"{p1} Final Rating", value=f"{int(r1_surf)}", delta=f"{r1_modifier} {surface} modifier")
-            c4.metric(label=f"{p2} Final Rating", value=f"{int(r2_surf)}", delta=f"{r2_modifier} {surface} modifier")
-            
-            st.markdown("### Step 2: The Probability Formula")
-            st.markdown("The algorithm plugs those final ratings into the standard Elo probability fraction:")
-            
-            # Draws the algebraic formula beautifully on the screen
-            st.latex(r"P(Win) = \frac{1}{1 + 10^{(Rating_2 - Rating_1) / 400}}")
-            
-            st.markdown("Plugging in the numbers for this exact match:")
-            st.latex(fr"P({p1}) = \frac{{1}}{{1 + 10^{{({int(r2_surf)} - {int(r1_surf)}) / 400}}}}")
-            
-            st.info(f"💡 Solving this fraction gives {p1} a **{p1_win_prob * 100:.1f}%** chance of winning, exactly as predicted above!")
+    df = pd.concat(frames).sort_values("tourney_date").reset_index(drop=True)
+    df = df[df["score"].notna() & ~df["score"].str.contains("W/O|RET|DEF", na=False)].reset_index(drop=True)
+
+    print(f"Data downloaded successfully. Processing {len(df)} matches...")
+
+    level_k   = {"G": 50, "M": 40, "A": 32, "D": 24, "F": 32}
+    surface_k = {"Hard": 32, "Clay": 32, "Grass": 20, "Carpet": 20}
+    np.random.seed(42)
+    flip = np.random.rand(len(df)) < 0.5
+
+    df_clean = pd.DataFrame({
+        "player1":       np.where(flip, df["loser_name"],  df["winner_name"]),
+        "player2":       np.where(flip, df["winner_name"], df["loser_name"]),
+        "surface":       df["surface"],
+        "tourney_date":  df["tourney_date"],
+        "tourney_level": df["tourney_level"],
+        "tourney_name":  df["tourney_name"],
+        "round":         df["round"].apply(round_to_num),
+        "score":         df["score"],
+        "p1_win":        np.where(flip, 0, 1),
+    })
+
+    model_elo = EloModel()
+    
+    print("Building features...")
+    clean_records = df_clean.to_dict('records')
+    
+    for row in clean_records:
+        p1, p2, surface = row["player1"], row["player2"], row["surface"]
+        p1_win  = row["p1_win"]
+        k = (level_k.get(row["tourney_level"], 32) + surface_k.get(surface, 32)) / 2
+        dom = parse_score(row["score"])
+        model_elo.update(p1, p2, p1_win, dom_ratio=dom, surface=surface, k=k)
+
+    # Simplified artifacts save for speed
+    all_players = sorted(set(df_clean["player1"].tolist() + df_clean["player2"].tolist()))
+    
+    artifacts = {
+        "model_elo": model_elo,
+        "clfs": {}, 
+        "all_players": all_players, 
+        "all_surfaces": df_clean["surface"].unique().tolist(), 
+        "all_tourneys": sorted(df_clean["tourney_name"].unique().tolist()),
+    }
+    return artifacts
+
+if __name__ == "__main__":
+    artifacts = build_and_train()
+    if artifacts:
+        print("Training complete. Saving artifacts to disk...")
+        joblib.dump(artifacts, "tennis_model_artifacts.pkl")
+        print("SUCCESS! You can now run your Streamlit app.")
