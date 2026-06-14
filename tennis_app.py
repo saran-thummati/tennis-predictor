@@ -8,119 +8,104 @@ from datetime import date
 # --- 1. CONNECT TO SUPABASE ---
 @st.cache_resource
 def init_connection():
-    # Streamlit securely pulls the keys from your cloud settings
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
 supabase: Client = init_connection()
 
-# --- 2. SESSION STATE ---
+# --- 2. SESSION STATE (MEMORY) ---
 if "user" not in st.session_state:
     st.session_state.user = None
+# This tracks our anonymous users!
+if "anon_preds" not in st.session_state:
+    st.session_state.anon_preds = 0
 
-# --- 3. THE LOGIN / SIGNUP PAGE ---
-if st.session_state.user is None:
-    st.set_page_config(page_title="Tennis Predictor", layout="centered")
-    st.title("Elite Tennis Predictor")
-    st.markdown("Create a free account to access the AI.")
-    
-    tab1, tab2 = st.tabs(["Log In", "Sign Up"])
-    
-    with tab1:
-        st.subheader("Welcome Back")
-        with st.form("login_form"):
-            login_email = st.text_input("Email")
-            login_password = st.text_input("Password", type="password")
-            submit_login = st.form_submit_button("Log In", use_container_width=True)
-            
-            if submit_login:
-                if not login_email or not login_password:
-                    st.error("Please fill in both fields.")
-                else:
-                    try:
-                        response = supabase.auth.sign_in_with_password({"email": login_email, "password": login_password})
-                        st.session_state.user = response.user
-                        st.rerun()
-                    except Exception as e:
-                        st.error("Login failed. Check your email and password.")
+# --- 3. LOAD MODELS ---
+@st.cache_resource
+def load_model_artifacts():
+    return joblib.load("tennis_model_artifacts.pkl")
 
-    with tab2:
-        st.subheader("Create a Free Account")
-        with st.form("signup_form"):
-            signup_email = st.text_input("Email")
-            signup_password = st.text_input("Password", type="password")
-            submit_signup = st.form_submit_button("Sign Up", use_container_width=True)
-            
-            if submit_signup:
-                if not signup_email or not signup_password:
-                    st.error("Please fill in both fields.")
-                else:
-                    try:
-                        # 1. Create the account
-                        supabase.auth.sign_up({"email": signup_email, "password": signup_password})
-                        
-                        # 2. Auto-login immediately
-                        login_response = supabase.auth.sign_in_with_password({"email": signup_email, "password": signup_password})
-                        st.session_state.user = login_response.user
-                        
-                        # 3. Create their blank prediction tracker in your SQL database
-                        supabase.table("user_usage").insert({
-                            "user_id": login_response.user.id,
-                            "email": signup_email,
-                            "predictions_used": 0,
-                            "last_reset_date": str(date.today()),
-                            "subscription_tier": "Free"
-                        }).execute()
-                        
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Error creating account: {e}")
+try:
+    artifacts = load_model_artifacts()
+    all_players = artifacts["all_players"]
+    model_elo = artifacts["model_elo"]
+    ai_model = artifacts["ai_model"]
+    h2h_tracker = artifacts["h2h_tracker"]
+    surface_form = artifacts.get("surface_form", {}) 
+    player_bio = artifacts["player_bio"]
+except Exception as e:
+    st.error("Could not load model artifacts. Check your files.")
+    st.stop()
 
-# --- 4. THE MAIN APP (Protected) ---
-else:
-    @st.cache_resource
-    def load_model_artifacts():
-        return joblib.load("tennis_model_artifacts.pkl")
-
-    try:
-        artifacts = load_model_artifacts()
-        all_players = artifacts["all_players"]
-        model_elo = artifacts["model_elo"]
-        ai_model = artifacts["ai_model"]
-        h2h_tracker = artifacts["h2h_tracker"]
-        surface_form = artifacts.get("surface_form", {}) 
-        player_bio = artifacts["player_bio"]
-    except Exception as e:
-        st.error("Could not load model artifacts. Check your files.")
-        st.stop()
-
-    # --- 5. ENFORCE PREDICTION LIMITS ---
-    user_id = st.session_state.user.id
-    today_str = str(date.today())
-    
-    # Check the database to see how many predictions they have made today
-    usage_data = supabase.table("user_usage").select("*").eq("user_id", user_id).execute()
-    
-    if len(usage_data.data) > 0:
-        user_record = usage_data.data[0]
-        preds_used = user_record["predictions_used"]
-        last_reset = user_record["last_reset_date"]
-        tier = user_record["subscription_tier"]
+# --- 4. SIDEBAR LOGIC (Auth & Limits) ---
+with st.sidebar:
+    # IF NOT LOGGED IN
+    if st.session_state.user is None:
+        st.header("Guest Mode")
+        st.progress(st.session_state.anon_preds / 5.0, text=f"{st.session_state.anon_preds} / 5 Free Predictions")
+        st.divider()
+        st.subheader("Unlock 50 Predictions")
+        st.write("Create a free account to track more matches!")
         
-        # If it is a new day, reset their predictions back to 0
-        if last_reset != today_str:
-            supabase.table("user_usage").update({
-                "predictions_used": 0,
-                "last_reset_date": today_str
-            }).eq("user_id", user_id).execute()
-            preds_used = 0
+        # Sidebar Login/Signup Form
+        auth_mode = st.radio("Choose Action", ["Log In", "Sign Up"])
+        with st.form("auth_form"):
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button(auth_mode, use_container_width=True)
+            
+            if submit:
+                if not email or not password:
+                    st.error("Fill all fields.")
+                else:
+                    if auth_mode == "Sign Up":
+                        try:
+                            # 1. Sign Up
+                            supabase.auth.sign_up({"email": email, "password": password})
+                            # 2. Auto Log In
+                            login_response = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                            st.session_state.user = login_response.user
+                            # 3. Build Database Tracker
+                            supabase.table("user_usage").insert({
+                                "user_id": login_response.user.id,
+                                "email": email,
+                                "predictions_used": 0,
+                                "last_reset_date": str(date.today()),
+                                "subscription_tier": "Free"
+                            }).execute()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+                    else:
+                        try:
+                            response = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                            st.session_state.user = response.user
+                            st.rerun()
+                        except Exception as e:
+                            st.error("Login failed. Check credentials.")
+                            
+    # IF LOGGED IN
     else:
-        preds_used = 0
-        tier = "Free"
+        user_id = st.session_state.user.id
+        today_str = str(date.today())
+        
+        usage_data = supabase.table("user_usage").select("*").eq("user_id", user_id).execute()
+        
+        if len(usage_data.data) > 0:
+            user_record = usage_data.data[0]
+            preds_used = user_record["predictions_used"]
+            last_reset = user_record["last_reset_date"]
+            tier = user_record["subscription_tier"]
+            
+            # Reset daily limit
+            if last_reset != today_str:
+                supabase.table("user_usage").update({"predictions_used": 0, "last_reset_date": today_str}).eq("user_id", user_id).execute()
+                preds_used = 0
+        else:
+            preds_used = 0
+            tier = "Free"
 
-    # Sidebar User Profile & Progress Bar
-    with st.sidebar:
         st.write(f"**Account:** {st.session_state.user.email}")
         st.write(f"**Tier:** {tier}")
         if tier == "Free":
@@ -132,35 +117,43 @@ else:
             st.session_state.user = None
             st.rerun()
 
-    # --- 6. PREDICTOR UI ---
-    st.title("Tennis predictor")
-    st.divider()
+# --- 5. MAIN PREDICTOR APP ---
+st.title("Elite Tennis Predictor")
+st.divider()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        p1 = st.selectbox("Select First Player", all_players, key="p1")
-    with col2:
-        default_p2_idx = 1 if len(all_players) > 1 else 0
-        p2 = st.selectbox("Select Second Player", all_players, index=default_p2_idx, key="p2")
+col1, col2 = st.columns(2)
+with col1:
+    p1 = st.selectbox("Select First Player", all_players, key="p1")
+with col2:
+    default_p2_idx = 1 if len(all_players) > 1 else 0
+    p2 = st.selectbox("Select Second Player", all_players, index=default_p2_idx, key="p2")
 
-    st.divider()
-    surface = st.selectbox("Select Court Surface", ["Hard", "Clay", "Grass"])
+st.divider()
+surface = st.selectbox("Select Court Surface", ["Hard", "Clay", "Grass"])
 
-    if st.button("Predict Match Outcome", use_container_width=True):
-        if p1 == p2:
-            st.warning("Please select two different players.")
-        # Stop them if they hit the limit
-        elif tier == "Free" and preds_used >= 50:
-            st.error("You have used all 50 free predictions for today. Come back tomorrow or upgrade to Premium.")
+if st.button("Predict Match Outcome", use_container_width=True):
+    if p1 == p2:
+        st.warning("Please select two different players.")
+    else:
+        can_predict = False
+        
+        # Check Limits BEFORE doing math
+        if st.session_state.user is None:
+            if st.session_state.anon_preds >= 5:
+                st.error("You have used your 5 free guest predictions! Please use the sidebar to create a free account and unlock 50 more.")
+            else:
+                can_predict = True
+                st.session_state.anon_preds += 1
         else:
-            with st.spinner("Calculating Probabilities..."):
-                
-                # Charge them 1 prediction in the database
-                supabase.table("user_usage").update({
-                    "predictions_used": preds_used + 1
-                }).eq("user_id", user_id).execute()
+            if tier == "Free" and preds_used >= 50:
+                st.error("You have used all 50 free predictions for today. Come back tomorrow or upgrade to Premium.")
+            else:
+                can_predict = True
+                supabase.table("user_usage").update({"predictions_used": preds_used + 1}).eq("user_id", user_id).execute()
 
-                # Run the Math
+        # Execute Prediction if approved
+        if can_predict:
+            with st.spinner("Calculating Probabilities..."):
                 r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
                 r1_surf, r2_surf = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
                 p1_wins_h2h = h2h_tracker.get(f"{p1}_vs_{p2}", 0)
