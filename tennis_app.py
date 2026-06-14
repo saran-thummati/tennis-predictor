@@ -21,7 +21,10 @@ cookie_manager = stx.CookieManager()
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# Read the invisible cookie from the user's browser
+# Create a memory slot to hold the prediction so it doesn't disappear
+if "match_result" not in st.session_state:
+    st.session_state.match_result = None
+
 current_cookie = cookie_manager.get(cookie="anon_preds")
 anon_preds = int(current_cookie) if current_cookie else 0
 
@@ -44,7 +47,6 @@ except Exception as e:
 
 # --- 4. SIDEBAR LOGIC (Auth & Limits) ---
 with st.sidebar:
-    # IF NOT LOGGED IN
     if st.session_state.user is None:
         st.header("Guest Mode")
         st.progress(anon_preds / 5.0, text=f"{anon_preds} / 5 Free Predictions")
@@ -85,7 +87,6 @@ with st.sidebar:
                         except Exception as e:
                             st.error("Login failed. Check credentials.")
                             
-    # IF LOGGED IN
     else:
         user_id = st.session_state.user.id
         today_str = str(date.today())
@@ -143,9 +144,7 @@ if st.button("Predict Match Outcome", use_container_width=True):
             else:
                 can_predict = True
                 new_count = anon_preds + 1
-                # Write the new count to their browser, locked in for 1 day (86400 seconds)
                 cookie_manager.set("anon_preds", str(new_count), max_age=86400)
-                anon_preds = new_count 
         else:
             if tier == "Free" and preds_used >= 50:
                 st.error("You have used all 50 free predictions for today. Come back tomorrow or upgrade to Premium.")
@@ -177,10 +176,23 @@ if st.button("Predict Match Outcome", use_container_width=True):
                 probabilities = ai_model.predict_proba(features)[0]
                 p1_win_prob = probabilities[1] 
                 
-                st.subheader("Prediction")
-                if p1_win_prob > 0.5:
-                    st.success(f"**Predicted Winner:** {p1}")
-                    st.metric(label=f"{p1} Win Probability", value=f"{p1_win_prob * 100:.1f}%")
-                else:
-                    st.success(f"**Predicted Winner:** {p2}")
-                    st.metric(label=f"{p2} Win Probability", value=f"{(1 - p1_win_prob) * 100:.1f}%")
+                # SAVE TO MEMORY INSTEAD OF DRAWING IMMEDIATELY
+                st.session_state.match_result = {
+                    "p1": p1,
+                    "p2": p2,
+                    "p1_win_prob": p1_win_prob
+                }
+                
+                # Force the page to refresh instantly so the progress bar updates
+                st.rerun()
+
+# --- 6. DRAW THE PREDICTION (Safely outside the button) ---
+if st.session_state.match_result:
+    res = st.session_state.match_result
+    st.subheader("Prediction")
+    if res["p1_win_prob"] > 0.5:
+        st.success(f"**Predicted Winner:** {res['p1']}")
+        st.metric(label=f"{res['p1']} Win Probability", value=f"{res['p1_win_prob'] * 100:.1f}%")
+    else:
+        st.success(f"**Predicted Winner:** {res['p2']}")
+        st.metric(label=f"{res['p2']} Win Probability", value=f"{(1 - res['p1_win_prob']) * 100:.1f}%")
