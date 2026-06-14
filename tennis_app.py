@@ -4,6 +4,7 @@ import numpy as np
 import joblib
 from supabase import create_client, Client
 from datetime import date
+import extra_streamlit_components as stx
 
 # --- 1. CONNECT TO SUPABASE ---
 @st.cache_resource
@@ -14,12 +15,15 @@ def init_connection():
 
 supabase: Client = init_connection()
 
-# --- 2. SESSION STATE (MEMORY) ---
+# --- 2. SESSION & COOKIE MEMORY ---
+cookie_manager = stx.CookieManager()
+
 if "user" not in st.session_state:
     st.session_state.user = None
-# This tracks our anonymous users!
-if "anon_preds" not in st.session_state:
-    st.session_state.anon_preds = 0
+
+# Read the invisible cookie from the user's browser
+current_cookie = cookie_manager.get(cookie="anon_preds")
+anon_preds = int(current_cookie) if current_cookie else 0
 
 # --- 3. LOAD MODELS ---
 @st.cache_resource
@@ -43,12 +47,11 @@ with st.sidebar:
     # IF NOT LOGGED IN
     if st.session_state.user is None:
         st.header("Guest Mode")
-        st.progress(st.session_state.anon_preds / 5.0, text=f"{st.session_state.anon_preds} / 5 Free Predictions")
+        st.progress(anon_preds / 5.0, text=f"{anon_preds} / 5 Free Predictions")
         st.divider()
         st.subheader("Unlock 50 Predictions")
         st.write("Create a free account to track more matches!")
         
-        # Sidebar Login/Signup Form
         auth_mode = st.radio("Choose Action", ["Log In", "Sign Up"])
         with st.form("auth_form"):
             email = st.text_input("Email")
@@ -61,12 +64,9 @@ with st.sidebar:
                 else:
                     if auth_mode == "Sign Up":
                         try:
-                            # 1. Sign Up
                             supabase.auth.sign_up({"email": email, "password": password})
-                            # 2. Auto Log In
                             login_response = supabase.auth.sign_in_with_password({"email": email, "password": password})
                             st.session_state.user = login_response.user
-                            # 3. Build Database Tracker
                             supabase.table("user_usage").insert({
                                 "user_id": login_response.user.id,
                                 "email": email,
@@ -98,7 +98,6 @@ with st.sidebar:
             last_reset = user_record["last_reset_date"]
             tier = user_record["subscription_tier"]
             
-            # Reset daily limit
             if last_reset != today_str:
                 supabase.table("user_usage").update({"predictions_used": 0, "last_reset_date": today_str}).eq("user_id", user_id).execute()
                 preds_used = 0
@@ -139,11 +138,14 @@ if st.button("Predict Match Outcome", use_container_width=True):
         
         # Check Limits BEFORE doing math
         if st.session_state.user is None:
-            if st.session_state.anon_preds >= 5:
+            if anon_preds >= 5:
                 st.error("You have used your 5 free guest predictions! Please use the sidebar to create a free account and unlock 50 more.")
             else:
                 can_predict = True
-                st.session_state.anon_preds += 1
+                new_count = anon_preds + 1
+                # Write the new count to their browser, locked in for 1 day (86400 seconds)
+                cookie_manager.set("anon_preds", str(new_count), max_age=86400)
+                anon_preds = new_count 
         else:
             if tier == "Free" and preds_used >= 50:
                 st.error("You have used all 50 free predictions for today. Come back tomorrow or upgrade to Premium.")
