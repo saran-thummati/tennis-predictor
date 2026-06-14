@@ -24,7 +24,7 @@ if st.session_state.user is None:
     st.title("Tennis Predictor")
     st.markdown("Create a free account to access the AI.")
     
-          tab1, tab2 = st.tabs(["Log In", "Sign Up"])
+    tab1, tab2 = st.tabs(["Log In", "Sign Up"])
     
     with tab1:
         st.subheader("Welcome Back")
