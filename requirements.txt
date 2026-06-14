@@ -4,3 +4,4 @@ numpy
 joblib
 scikit-learn==1.8.0
 supabase
+extra-streamlit-components
