@@ -6,12 +6,17 @@ from supabase import create_client, Client
 from datetime import date
 import extra_streamlit_components as stx
 import plotly.express as px
+import stripe
 
 # --- 0. PAGE CONFIGURATION ---
-# We must set it to "wide" so the 3/4 map and 1/4 sidebar look proportional
-st.set_page_config(page_title="Tennis Predictor", layout="wide")
+st.set_page_config(page_title="Elite Tennis Predictor", layout="wide")
 
-# --- 1. CONNECT TO SUPABASE ---
+# --- 1. SETUP STRIPE ---
+stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
+# UPDATE THIS TO YOUR ACTUAL STREAMLIT URL BEFORE LAUNCHING
+DOMAIN = "https://your-tennis-app.streamlit.app" 
+
+# --- 2. CONNECT TO SUPABASE ---
 @st.cache_resource
 def init_connection():
     url = st.secrets["SUPABASE_URL"]
@@ -20,33 +25,50 @@ def init_connection():
 
 supabase: Client = init_connection()
 
-# --- 2. SESSION & COOKIE MEMORY ---
+# --- 3. PAYMENT SUCCESS CATCHER ---
+# We catch the Stripe receipt at the top of the file before rendering the UI
+query_params = st.query_params
+if "success" in query_params and "session_id" in query_params:
+    session_id = query_params["session_id"]
+    try:
+        session = stripe.checkout.Session.retrieve(session_id)
+        if session.payment_status == "paid":
+            payer_uid = session.client_reference_id
+            
+            # Upgrade their account in the database
+            supabase.table("user_usage").update({
+                "subscription_tier": "Premium"
+            }).eq("user_id", payer_uid).execute()
+            
+            st.balloons()
+            st.success("Payment Successful! You are now a Premium Member.")
+            st.query_params.clear()
+    except Exception as e:
+        st.error("Could not verify payment.")
+
+# --- 4. SESSION & COOKIE MEMORY ---
 cookie_manager = stx.CookieManager()
 
 if "user" not in st.session_state:
     st.session_state.user = None
 if "match_result" not in st.session_state:
     st.session_state.match_result = None
-# Tracks if they clicked "Use as Guest"
 if "is_guest" not in st.session_state:
     st.session_state.is_guest = False
-# Tells the landing page whether to show "Log In" or "Sign Up" initially
 if "auth_action" not in st.session_state:
     st.session_state.auth_action = "Log In"
 
-# Read the cookie
+# Read the invisible cookie
 current_cookie = cookie_manager.get(cookie="anon_preds")
 cookie_val = int(current_cookie) if current_cookie else 0
 
-# Sync the cookie with Streamlit's active memory
+# Sync the cookie into the active memory
 if "anon_preds" not in st.session_state:
     st.session_state.anon_preds = cookie_val
-
-# If they refresh the page, ensure RAM catches up to the cookie
 if cookie_val > st.session_state.anon_preds:
     st.session_state.anon_preds = cookie_val
 
-# --- 3. LOAD MODELS ---
+# --- 5. LOAD MODELS ---
 @st.cache_resource
 def load_model_artifacts():
     return joblib.load("tennis_model_artifacts.pkl")
@@ -63,36 +85,54 @@ except Exception as e:
     st.error("Could not load model artifacts. Check your files.")
     st.stop()
 
-# --- 4. THE PAYWALL POPUP (DIALOG) ---
+# --- 6. THE PAYWALL POPUP (DIALOG) ---
 @st.dialog("Prediction Limit Reached")
 def show_paywall():
-    st.warning("You have run out of free predictions. Sign in to unlock more.")
-    st.write("Join the Elite Predictor to access unlimited daily insights.")
+    st.warning("You have run out of free predictions.")
+    st.write("Join the Elite Predictor for $5/month to access unlimited daily math-backed insights.")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Sign In", use_container_width=True):
+    # If they are a Guest, they must sign in first
+    if st.session_state.user is None:
+        st.error("Please Sign In first to upgrade your account.")
+        if st.button("Sign In"):
             st.session_state.is_guest = False
             st.session_state.auth_action = "Log In"
             st.rerun()
-    with col2:
-        if st.button("Sign Up", type="primary", use_container_width=True):
-            st.session_state.is_guest = False
-            st.session_state.auth_action = "Sign Up"
-            st.rerun()
-
+    # If they are logged in, show the Stripe button
+    else:
+        try:
+            checkout_session = stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=[{
+                    'price_data': {
+                        'currency': 'usd',
+                        'unit_amount': 500, # $5.00
+                        'recurring': {'interval': 'month'},
+                        'product_data': {
+                            'name': 'Elite Predictor Premium',
+                            'description': 'Unlimited daily AI tennis predictions',
+                        },
+                    },
+                    'quantity': 1,
+                }],
+                mode='subscription',
+                client_reference_id=st.session_state.user.id,
+                success_url=DOMAIN + '/?success=true&session_id={CHECKOUT_SESSION_ID}',
+                cancel_url=DOMAIN + '/?canceled=true',
+            )
+            st.link_button("💳 Pay with Stripe to Upgrade", checkout_session.url, type="primary", use_container_width=True)
+        except Exception as e:
+            st.error(f"Error connecting to Stripe: {e}")
 
 # ==========================================
 # VIEW 1: THE LANDING PAGE (Map + Auth)
 # ==========================================
 if st.session_state.user is None and not st.session_state.is_guest:
     
-    # Create the 3/4 and 1/4 layout
     map_col, auth_col = st.columns([3, 1])
     
     with map_col:
         st.title("Global Tennis Analytics")
-        # Define the Grand Slam coordinates
         slams = pd.DataFrame({
             "City": ["New York", "London", "Paris", "Melbourne"],
             "Lat": [40.7128, 51.5074, 48.8566, -37.8136],
@@ -100,30 +140,25 @@ if st.session_state.user is None and not st.session_state.is_guest:
             "Tournament": ["US Open", "Wimbledon", "Roland Garros", "Australian Open"]
         })
         
-        # Build the custom black & white map
         fig = px.scatter_geo(slams, lat="Lat", lon="Lon", hover_name="Tournament")
         fig.update_geos(
             showcountries=True, countrycolor="white",
             showland=True, landcolor="black",
-            showocean=True, oceancolor="#111111", # Slightly lighter black for ocean contrast
+            showocean=True, oceancolor="#111111", 
             bgcolor="black",
             projection_type="natural earth"
         )
         fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", # Transparent background to match Streamlit
+            paper_bgcolor="rgba(0,0,0,0)", 
             plot_bgcolor="rgba(0,0,0,0)",
             margin=dict(l=0, r=0, t=0, b=0),
             height=600
         )
-        # Style the points
         fig.update_traces(marker=dict(size=12, color="white", line=dict(width=2, color="gray")))
-        
         st.plotly_chart(fig, use_container_width=True)
 
     with auth_col:
         st.header("Access the AI")
-        
-        # The Auth Form
         auth_mode = st.radio("Account", ["Log In", "Sign Up"], index=0 if st.session_state.auth_action == "Log In" else 1)
         
         with st.form("auth_form"):
@@ -168,7 +203,7 @@ if st.session_state.user is None and not st.session_state.is_guest:
 # VIEW 2: THE MAIN PREDICTOR APP
 # ==========================================
 else:
-    # Check Database Limits for Logged-In Users
+    # Check Limits for Logged In Users
     if st.session_state.user is not None:
         user_id = st.session_state.user.id
         today_str = str(date.today())
@@ -188,21 +223,24 @@ else:
             preds_used = 0
             tier = "Free"
 
-    # Minimal Sidebar
+    # Sidebar
     with st.sidebar:
         if st.session_state.user is not None:
             st.write(f"**Account:** {st.session_state.user.email}")
             st.write(f"**Tier:** {tier}")
+            if tier == "Free":
+                st.write(f"**Used:** {preds_used} / 50 Daily")
             if st.button("Log Out"):
                 st.session_state.user = None
                 st.rerun()
         else:
             st.write("**Account:** Guest Mode")
+            st.write(f"**Used:** {st.session_state.anon_preds} / 5 Free")
             if st.button("Exit Guest Mode"):
                 st.session_state.is_guest = False
                 st.rerun()
 
-    # The Predictor UI
+    # Predictor UI
     st.title("Elite Tennis Predictor")
     st.divider()
 
@@ -222,36 +260,33 @@ else:
         else:
             can_predict = False
             
-            # 1. Guest Verification (Pop the Dialog if limit reached)
+            # 1. GUEST CHECK
             if st.session_state.user is None:
-                if anon_preds >= 5:
-                    show_paywall()  # TRIGGERS THE POPUP
+                if st.session_state.anon_preds >= 5:
+                    show_paywall() 
                 else:
                     can_predict = True
-                    new_count = anon_preds + 1
-                    cookie_manager.set("anon_preds", str(new_count), max_age=86400)
-                    anon_preds = new_count 
-                    
-            # 2. Logged In User Verification
+                    st.session_state.anon_preds += 1
+                    cookie_manager.set("anon_preds", str(st.session_state.anon_preds), max_age=86400)
+            
+            # 2. LOGGED IN CHECK
             else:
                 if tier == "Free" and preds_used >= 50:
-                    st.error("You have used all 50 free predictions for today. Come back tomorrow.")
+                    show_paywall() # Replaced the error message so Free users get the Stripe upgrade button!
                 else:
                     can_predict = True
                     supabase.table("user_usage").update({"predictions_used": preds_used + 1}).eq("user_id", user_id).execute()
 
-            # Execute Prediction if approved
+            # 3. DO THE MATH
             if can_predict:
                 with st.spinner("Calculating Probabilities..."):
                     
-                    # Core Math
                     r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
                     r1_surf, r2_surf = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
                     p1_wins_h2h = h2h_tracker.get(f"{p1}_vs_{p2}", 0)
                     p2_wins_h2h = h2h_tracker.get(f"{p2}_vs_{p1}", 0)
                     h2h_adv = p1_wins_h2h - p2_wins_h2h
                     
-                    # Momentum Multiplier implementation (From our earlier fix)
                     p1_recent = surface_form.get(p1, {}).get(surface, [0.5])
                     p2_recent = surface_form.get(p2, {}).get(surface, [0.5])
                     form_1_surf = (sum(p1_recent) / len(p1_recent)) * 100 if p1_recent else 50.0
@@ -272,7 +307,7 @@ else:
                     st.session_state.match_result = {
                         "p1": p1, "p2": p2, "p1_win_prob": p1_win_prob
                     }
-                    st.rerun()
+                    # Removed st.rerun() to ensure the browser has time to save the cookie
 
     # Draw the Prediction Result
     if st.session_state.match_result:
