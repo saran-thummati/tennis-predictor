@@ -34,8 +34,17 @@ if "is_guest" not in st.session_state:
 if "auth_action" not in st.session_state:
     st.session_state.auth_action = "Log In"
 
+# Read the cookie
 current_cookie = cookie_manager.get(cookie="anon_preds")
-anon_preds = int(current_cookie) if current_cookie else 0
+cookie_val = int(current_cookie) if current_cookie else 0
+
+# Sync the cookie with Streamlit's active memory
+if "anon_preds" not in st.session_state:
+    st.session_state.anon_preds = cookie_val
+
+# If they refresh the page, ensure RAM catches up to the cookie
+if cookie_val > st.session_state.anon_preds:
+    st.session_state.anon_preds = cookie_val
 
 # --- 3. LOAD MODELS ---
 @st.cache_resource
