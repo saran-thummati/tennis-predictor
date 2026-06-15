@@ -11,9 +11,14 @@ import stripe
 # --- 0. PAGE CONFIGURATION ---
 st.set_page_config(page_title="Elite Tennis Predictor", layout="wide")
 
-# --- 1. SETUP STRIPE ---
-stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
-# UPDATE THIS TO YOUR ACTUAL STREAMLIT URL BEFORE LAUNCHING
+# --- 1. SETUP STRIPE (CRASH-PROOF) ---
+# Safely check if the key exists so the app doesn't break if you haven't set it up yet!
+if "STRIPE_SECRET_KEY" in st.secrets:
+    stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
+    stripe_configured = True
+else:
+    stripe_configured = False
+
 DOMAIN = "https://your-tennis-app.streamlit.app" 
 
 # --- 2. CONNECT TO SUPABASE ---
@@ -26,20 +31,16 @@ def init_connection():
 supabase: Client = init_connection()
 
 # --- 3. PAYMENT SUCCESS CATCHER ---
-# We catch the Stripe receipt at the top of the file before rendering the UI
 query_params = st.query_params
-if "success" in query_params and "session_id" in query_params:
+if stripe_configured and "success" in query_params and "session_id" in query_params:
     session_id = query_params["session_id"]
     try:
         session = stripe.checkout.Session.retrieve(session_id)
         if session.payment_status == "paid":
             payer_uid = session.client_reference_id
-            
-            # Upgrade their account in the database
             supabase.table("user_usage").update({
                 "subscription_tier": "Premium"
             }).eq("user_id", payer_uid).execute()
-            
             st.balloons()
             st.success("Payment Successful! You are now a Premium Member.")
             st.query_params.clear()
@@ -58,11 +59,9 @@ if "is_guest" not in st.session_state:
 if "auth_action" not in st.session_state:
     st.session_state.auth_action = "Log In"
 
-# Read the invisible cookie
 current_cookie = cookie_manager.get(cookie="anon_preds")
 cookie_val = int(current_cookie) if current_cookie else 0
 
-# Sync the cookie into the active memory
 if "anon_preds" not in st.session_state:
     st.session_state.anon_preds = cookie_val
 if cookie_val > st.session_state.anon_preds:
@@ -91,38 +90,39 @@ def show_paywall():
     st.warning("You have run out of free predictions.")
     st.write("Join the Elite Predictor for $5/month to access unlimited daily math-backed insights.")
     
-    # If they are a Guest, they must sign in first
     if st.session_state.user is None:
         st.error("Please Sign In first to upgrade your account.")
-        if st.button("Sign In"):
+        if st.button("Sign In", key="dialog_signin"):
             st.session_state.is_guest = False
             st.session_state.auth_action = "Log In"
             st.rerun()
-    # If they are logged in, show the Stripe button
     else:
-        try:
-            checkout_session = stripe.checkout.Session.create(
-                payment_method_types=['card'],
-                line_items=[{
-                    'price_data': {
-                        'currency': 'usd',
-                        'unit_amount': 500, # $5.00
-                        'recurring': {'interval': 'month'},
-                        'product_data': {
-                            'name': 'Elite Predictor Premium',
-                            'description': 'Unlimited daily AI tennis predictions',
+        if stripe_configured:
+            try:
+                checkout_session = stripe.checkout.Session.create(
+                    payment_method_types=['card'],
+                    line_items=[{
+                        'price_data': {
+                            'currency': 'usd',
+                            'unit_amount': 500, 
+                            'recurring': {'interval': 'month'},
+                            'product_data': {
+                                'name': 'Elite Predictor Premium',
+                                'description': 'Unlimited daily AI tennis predictions',
+                            },
                         },
-                    },
-                    'quantity': 1,
-                }],
-                mode='subscription',
-                client_reference_id=st.session_state.user.id,
-                success_url=DOMAIN + '/?success=true&session_id={CHECKOUT_SESSION_ID}',
-                cancel_url=DOMAIN + '/?canceled=true',
-            )
-            st.link_button("💳 Pay with Stripe to Upgrade", checkout_session.url, type="primary", use_container_width=True)
-        except Exception as e:
-            st.error(f"Error connecting to Stripe: {e}")
+                        'quantity': 1,
+                    }],
+                    mode='subscription',
+                    client_reference_id=st.session_state.user.id,
+                    success_url=DOMAIN + '/?success=true&session_id={CHECKOUT_SESSION_ID}',
+                    cancel_url=DOMAIN + '/?canceled=true',
+                )
+                st.link_button("💳 Pay with Stripe to Upgrade", checkout_session.url, type="primary", use_container_width=True)
+            except Exception as e:
+                st.error(f"Error connecting to Stripe: {e}")
+        else:
+            st.info("Payments are currently disabled while we set up our merchant account. Check back later!")
 
 # ==========================================
 # VIEW 1: THE LANDING PAGE (Map + Auth)
@@ -203,7 +203,6 @@ if st.session_state.user is None and not st.session_state.is_guest:
 # VIEW 2: THE MAIN PREDICTOR APP
 # ==========================================
 else:
-    # Check Limits for Logged In Users
     if st.session_state.user is not None:
         user_id = st.session_state.user.id
         today_str = str(date.today())
@@ -223,8 +222,17 @@ else:
             preds_used = 0
             tier = "Free"
 
-    # Sidebar
+    # Minimal Sidebar & Top-Left Notifications
     with st.sidebar:
+        # TOP LEFT GUEST NOTIFICATION 
+        if st.session_state.user is None and st.session_state.anon_preds >= 5:
+            st.error("You have run out of predictions. Sign in to unlock more.")
+            if st.button("Sign In", type="primary", use_container_width=True):
+                st.session_state.is_guest = False
+                st.session_state.auth_action = "Log In"
+                st.rerun()
+            st.divider()
+
         if st.session_state.user is not None:
             st.write(f"**Account:** {st.session_state.user.email}")
             st.write(f"**Tier:** {tier}")
@@ -272,7 +280,7 @@ else:
             # 2. LOGGED IN CHECK
             else:
                 if tier == "Free" and preds_used >= 50:
-                    show_paywall() # Replaced the error message so Free users get the Stripe upgrade button!
+                    show_paywall() 
                 else:
                     can_predict = True
                     supabase.table("user_usage").update({"predictions_used": preds_used + 1}).eq("user_id", user_id).execute()
@@ -307,7 +315,6 @@ else:
                     st.session_state.match_result = {
                         "p1": p1, "p2": p2, "p1_win_prob": p1_win_prob
                     }
-                    # Removed st.rerun() to ensure the browser has time to save the cookie
 
     # Draw the Prediction Result
     if st.session_state.match_result:
