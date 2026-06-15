@@ -9,7 +9,7 @@ import plotly.express as px
 
 # --- 0. PAGE CONFIGURATION ---
 # We must set it to "wide" so the 3/4 map and 1/4 sidebar look proportional
-st.set_page_config(page_title="Elite Tennis Predictor", layout="wide")
+st.set_page_config(page_title="Tennis Predictor", layout="wide")
 
 # --- 1. CONNECT TO SUPABASE ---
 @st.cache_resource
@@ -58,7 +58,7 @@ except Exception as e:
 @st.dialog("Prediction Limit Reached")
 def show_paywall():
     st.warning("You have run out of free predictions. Sign in to unlock more.")
-    st.write("Join the Elite Predictor to access unlimited daily math-backed insights.")
+    st.write("Join the Elite Predictor to access unlimited daily insights.")
     
     col1, col2 = st.columns(2)
     with col1:
