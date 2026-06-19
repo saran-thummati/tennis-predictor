@@ -5,21 +5,20 @@ import joblib
 from supabase import create_client, Client
 from datetime import date
 import extra_streamlit_components as stx
-import plotly.express as px
 import stripe
 
 # --- 0. PAGE CONFIGURATION ---
-st.set_page_config(page_title="Elite Tennis Predictor", layout="wide")
+st.set_page_config(page_title="Tennis Predictor", layout="centered")
 
 # --- 1. SETUP STRIPE (CRASH-PROOF) ---
-# Safely check if the key exists so the app doesn't break if you haven't set it up yet!
 if "STRIPE_SECRET_KEY" in st.secrets:
     stripe.api_key = st.secrets["STRIPE_SECRET_KEY"]
     stripe_configured = True
 else:
     stripe_configured = False
 
-DOMAIN = "https://your-tennis-app.streamlit.app" 
+# UPDATE THIS TO YOUR ACTUAL STREAMLIT URL
+DOMAIN = "https://netrix.streamlit.app/" 
 
 # --- 2. CONNECT TO SUPABASE ---
 @st.cache_resource
@@ -30,10 +29,36 @@ def init_connection():
 
 supabase: Client = init_connection()
 
-# --- 3. PAYMENT SUCCESS CATCHER ---
-query_params = st.query_params
-if stripe_configured and "success" in query_params and "session_id" in query_params:
-    session_id = query_params["session_id"]
+# --- 3. GOOGLE AUTH CATCHER ---
+if "code" in st.query_params:
+    try:
+        auth_code = st.query_params["code"]
+        # Trade the code for a secure Supabase session
+        session = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+        st.session_state.user = session.user
+        
+        # Check if they already exist in your tracking table
+        user_check = supabase.table("user_usage").select("*").eq("user_id", session.user.id).execute()
+        
+        # If they are brand new, build their database tracker
+        if len(user_check.data) == 0:
+            supabase.table("user_usage").insert({
+                "user_id": session.user.id,
+                "email": session.user.email,
+                "predictions_used": 0,
+                "last_reset_date": str(date.today()),
+                "subscription_tier": "Free"
+            }).execute()
+            
+        # Clear the URL and refresh into the app
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        st.error(f"Google Login Failed: {e}")
+
+# --- 4. STRIPE PAYMENT CATCHER ---
+if stripe_configured and "success" in st.query_params and "session_id" in st.query_params:
+    session_id = st.query_params["session_id"]
     try:
         session = stripe.checkout.Session.retrieve(session_id)
         if session.payment_status == "paid":
@@ -47,17 +72,13 @@ if stripe_configured and "success" in query_params and "session_id" in query_par
     except Exception as e:
         st.error("Could not verify payment.")
 
-# --- 4. SESSION & COOKIE MEMORY ---
+# --- 5. SESSION & COOKIE MEMORY ---
 cookie_manager = stx.CookieManager()
 
 if "user" not in st.session_state:
     st.session_state.user = None
 if "match_result" not in st.session_state:
     st.session_state.match_result = None
-if "is_guest" not in st.session_state:
-    st.session_state.is_guest = False
-if "auth_action" not in st.session_state:
-    st.session_state.auth_action = "Log In"
 
 current_cookie = cookie_manager.get(cookie="anon_preds")
 cookie_val = int(current_cookie) if current_cookie else 0
@@ -67,7 +88,7 @@ if "anon_preds" not in st.session_state:
 if cookie_val > st.session_state.anon_preds:
     st.session_state.anon_preds = cookie_val
 
-# --- 5. LOAD MODELS ---
+# --- 6. LOAD MODELS ---
 @st.cache_resource
 def load_model_artifacts():
     return joblib.load("tennis_model_artifacts.pkl")
@@ -84,18 +105,14 @@ except Exception as e:
     st.error("Could not load model artifacts. Check your files.")
     st.stop()
 
-# --- 6. THE PAYWALL POPUP (DIALOG) ---
+# --- 7. THE PAYWALL POPUP (DIALOG) ---
 @st.dialog("Prediction Limit Reached")
 def show_paywall():
     st.warning("You have run out of free predictions.")
     st.write("Join the Elite Predictor for $5/month to access unlimited daily math-backed insights.")
     
     if st.session_state.user is None:
-        st.error("Please Sign In first to upgrade your account.")
-        if st.button("Sign In", key="dialog_signin"):
-            st.session_state.is_guest = False
-            st.session_state.auth_action = "Log In"
-            st.rerun()
+        st.error("Please use the sidebar to Sign Up for a free account to unlock 50 daily predictions!")
     else:
         if stripe_configured:
             try:
@@ -122,45 +139,29 @@ def show_paywall():
             except Exception as e:
                 st.error(f"Error connecting to Stripe: {e}")
         else:
-            st.info("Payments are currently disabled while we set up our merchant account. Check back later!")
+            st.info("Payments are currently disabled. Check back later!")
 
-# ==========================================
-# VIEW 1: THE LANDING PAGE (Map + Auth)
-# ==========================================
-if st.session_state.user is None and not st.session_state.is_guest:
-    
-    map_col, auth_col = st.columns([3, 1])
-    
-    with map_col:
-        st.title("Global Tennis Analytics")
-        slams = pd.DataFrame({
-            "City": ["New York", "London", "Paris", "Melbourne"],
-            "Lat": [40.7128, 51.5074, 48.8566, -37.8136],
-            "Lon": [-74.0060, -0.1278, 2.3522, 144.9631],
-            "Tournament": ["US Open", "Wimbledon", "Roland Garros", "Australian Open"]
-        })
+# --- 8. SIDEBAR (Auth & Progress) ---
+with st.sidebar:
+    if st.session_state.user is None:
+        st.header("Guest Mode")
+        st.progress(st.session_state.anon_preds / 5.0, text=f"{st.session_state.anon_preds} / 5 Free Predictions")
+        st.divider()
+        st.subheader("Unlock 50 Predictions")
+        st.write("Create a free account to track more matches!")
         
-        fig = px.scatter_geo(slams, lat="Lat", lon="Lon", hover_name="Tournament")
-        fig.update_geos(
-            showcountries=True, countrycolor="white",
-            showland=True, landcolor="black",
-            showocean=True, oceancolor="#111111", 
-            bgcolor="black",
-            projection_type="natural earth"
-        )
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)", 
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=0, r=0, t=0, b=0),
-            height=600
-        )
-        fig.update_traces(marker=dict(size=12, color="white", line=dict(width=2, color="gray")))
-        st.plotly_chart(fig, use_container_width=True)
-
-    with auth_col:
-        st.header("Access the AI")
-        auth_mode = st.radio("Account", ["Log In", "Sign Up"], index=0 if st.session_state.auth_action == "Log In" else 1)
+        # 1. Google Sign-In Button
+        if st.button("🌐 Continue with Google", use_container_width=True):
+            res = supabase.auth.sign_in_with_oauth({
+                "provider": "google",
+                "options": {"redirect_to": DOMAIN}
+            })
+            st.markdown(f'<meta http-equiv="refresh" content="0;url={res.url}">', unsafe_allow_html=True)
+            
+        st.markdown("<p style='text-align: center; color: gray;'>OR</p>", unsafe_allow_html=True)
         
+        # 2. Manual Email Sign-In
+        auth_mode = st.radio("Choose Action", ["Log In", "Sign Up"], label_visibility="collapsed")
         with st.form("auth_form"):
             email = st.text_input("Email")
             password = st.text_input("Password", type="password")
@@ -184,7 +185,7 @@ if st.session_state.user is None and not st.session_state.is_guest:
                             }).execute()
                             st.rerun()
                         except Exception as e:
-                            st.error("Error creating account. Ensure email is unique.")
+                            st.error(f"Error: Ensure email is unique.")
                     else:
                         try:
                             response = supabase.auth.sign_in_with_password({"email": email, "password": password})
@@ -193,17 +194,7 @@ if st.session_state.user is None and not st.session_state.is_guest:
                         except Exception as e:
                             st.error("Login failed. Check credentials.")
                             
-        st.divider()
-        st.markdown("<p style='text-align: center; color: gray;'>Or try it before you buy it</p>", unsafe_allow_html=True)
-        if st.button("Use as Guest", use_container_width=True):
-            st.session_state.is_guest = True
-            st.rerun()
-
-# ==========================================
-# VIEW 2: THE MAIN PREDICTOR APP
-# ==========================================
-else:
-    if st.session_state.user is not None:
+    else:
         user_id = st.session_state.user.id
         today_str = str(date.today())
         
@@ -222,107 +213,91 @@ else:
             preds_used = 0
             tier = "Free"
 
-    # Minimal Sidebar & Top-Left Notifications
-    with st.sidebar:
-        # TOP LEFT GUEST NOTIFICATION 
-        if st.session_state.user is None and st.session_state.anon_preds >= 5:
-            st.error("You have run out of predictions. Sign in to unlock more.")
-            if st.button("Sign In", type="primary", use_container_width=True):
-                st.session_state.is_guest = False
-                st.session_state.auth_action = "Log In"
-                st.rerun()
-            st.divider()
-
-        if st.session_state.user is not None:
-            st.write(f"**Account:** {st.session_state.user.email}")
-            st.write(f"**Tier:** {tier}")
-            if tier == "Free":
-                st.write(f"**Used:** {preds_used} / 50 Daily")
-            if st.button("Log Out"):
-                st.session_state.user = None
-                st.rerun()
+        st.write(f"**Account:** {st.session_state.user.email}")
+        st.write(f"**Tier:** {tier}")
+        if tier == "Free":
+            st.progress(preds_used / 50.0, text=f"{preds_used} / 50 Daily Predictions Used")
         else:
-            st.write("**Account:** Guest Mode")
-            st.write(f"**Used:** {st.session_state.anon_preds} / 5 Free")
-            if st.button("Exit Guest Mode"):
-                st.session_state.is_guest = False
-                st.rerun()
-
-    # Predictor UI
-    st.title("Elite Tennis Predictor")
-    st.divider()
-
-    col1, col2 = st.columns(2)
-    with col1:
-        p1 = st.selectbox("Select First Player", all_players, key="p1")
-    with col2:
-        default_p2_idx = 1 if len(all_players) > 1 else 0
-        p2 = st.selectbox("Select Second Player", all_players, index=default_p2_idx, key="p2")
-
-    st.divider()
-    surface = st.selectbox("Select Court Surface", ["Hard", "Clay", "Grass"])
-
-    if st.button("Predict Match Outcome", use_container_width=True):
-        if p1 == p2:
-            st.warning("Please select two different players.")
-        else:
-            can_predict = False
+            st.success("Unlimited Predictions Unlocked")
             
-            # 1. GUEST CHECK
-            if st.session_state.user is None:
-                if st.session_state.anon_preds >= 5:
-                    show_paywall() 
-                else:
-                    can_predict = True
-                    st.session_state.anon_preds += 1
-                    cookie_manager.set("anon_preds", str(st.session_state.anon_preds), max_age=86400)
-            
-            # 2. LOGGED IN CHECK
+        if st.button("Log Out"):
+            st.session_state.user = None
+            st.rerun()
+
+# --- 9. MAIN PREDICTOR UI ---
+st.title("Elite Tennis Predictor")
+st.divider()
+
+col1, col2 = st.columns(2)
+with col1:
+    p1 = st.selectbox("Select First Player", all_players, key="p1")
+with col2:
+    default_p2_idx = 1 if len(all_players) > 1 else 0
+    p2 = st.selectbox("Select Second Player", all_players, index=default_p2_idx, key="p2")
+
+st.divider()
+surface = st.selectbox("Select Court Surface", ["Hard", "Clay", "Grass"])
+
+if st.button("Predict Match Outcome", use_container_width=True):
+    if p1 == p2:
+        st.warning("Please select two different players.")
+    else:
+        can_predict = False
+        
+        # 1. GUEST CHECK
+        if st.session_state.user is None:
+            if st.session_state.anon_preds >= 5:
+                show_paywall() 
             else:
-                if tier == "Free" and preds_used >= 50:
-                    show_paywall() 
-                else:
-                    can_predict = True
-                    supabase.table("user_usage").update({"predictions_used": preds_used + 1}).eq("user_id", user_id).execute()
-
-            # 3. DO THE MATH
-            if can_predict:
-                with st.spinner("Calculating Probabilities..."):
-                    
-                    r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
-                    r1_surf, r2_surf = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
-                    p1_wins_h2h = h2h_tracker.get(f"{p1}_vs_{p2}", 0)
-                    p2_wins_h2h = h2h_tracker.get(f"{p2}_vs_{p1}", 0)
-                    h2h_adv = p1_wins_h2h - p2_wins_h2h
-                    
-                    p1_recent = surface_form.get(p1, {}).get(surface, [0.5])
-                    p2_recent = surface_form.get(p2, {}).get(surface, [0.5])
-                    form_1_surf = (sum(p1_recent) / len(p1_recent)) * 100 if p1_recent else 50.0
-                    form_2_surf = (sum(p2_recent) / len(p2_recent)) * 100 if p2_recent else 50.0
-                    
-                    momentum_multiplier = 3.0 
-                    form_adv = ((form_1_surf / 100) - (form_2_surf / 100)) * momentum_multiplier
-                    
-                    b1 = player_bio.get(p1, {"age": 25.0, "hand": "R"})
-                    b2 = player_bio.get(p2, {"age": 25.0, "hand": "R"})
-                    p1_is_lefty = 1 if b1["hand"] == 'L' else 0
-                    p2_is_lefty = 1 if b2["hand"] == 'L' else 0
-
-                    features = np.array([[r1_base - r2_base, r1_surf - r2_surf, h2h_adv, form_adv, b1["age"] - b2["age"], p1_is_lefty - p2_is_lefty]])
-                    probabilities = ai_model.predict_proba(features)[0]
-                    p1_win_prob = probabilities[1] 
-                    
-                    st.session_state.match_result = {
-                        "p1": p1, "p2": p2, "p1_win_prob": p1_win_prob
-                    }
-
-    # Draw the Prediction Result
-    if st.session_state.match_result:
-        res = st.session_state.match_result
-        st.subheader("Prediction")
-        if res["p1_win_prob"] > 0.5:
-            st.success(f"**Predicted Winner:** {res['p1']}")
-            st.metric(label=f"{res['p1']} Win Probability", value=f"{res['p1_win_prob'] * 100:.1f}%")
+                can_predict = True
+                st.session_state.anon_preds += 1
+                cookie_manager.set("anon_preds", str(st.session_state.anon_preds), max_age=86400)
+        
+        # 2. LOGGED IN CHECK
         else:
-            st.success(f"**Predicted Winner:** {res['p2']}")
-            st.metric(label=f"{res['p2']} Win Probability", value=f"{(1 - res['p1_win_prob']) * 100:.1f}%")
+            if tier == "Free" and preds_used >= 50:
+                show_paywall() 
+            else:
+                can_predict = True
+                supabase.table("user_usage").update({"predictions_used": preds_used + 1}).eq("user_id", user_id).execute()
+
+        # 3. DO THE MATH
+        if can_predict:
+            with st.spinner("Calculating Probabilities..."):
+                r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
+                r1_surf, r2_surf = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
+                p1_wins_h2h = h2h_tracker.get(f"{p1}_vs_{p2}", 0)
+                p2_wins_h2h = h2h_tracker.get(f"{p2}_vs_{p1}", 0)
+                h2h_adv = p1_wins_h2h - p2_wins_h2h
+                
+                p1_recent = surface_form.get(p1, {}).get(surface, [0.5])
+                p2_recent = surface_form.get(p2, {}).get(surface, [0.5])
+                form_1_surf = (sum(p1_recent) / len(p1_recent)) * 100 if p1_recent else 50.0
+                form_2_surf = (sum(p2_recent) / len(p2_recent)) * 100 if p2_recent else 50.0
+                
+                momentum_multiplier = 3.0 
+                form_adv = ((form_1_surf / 100) - (form_2_surf / 100)) * momentum_multiplier
+                
+                b1 = player_bio.get(p1, {"age": 25.0, "hand": "R"})
+                b2 = player_bio.get(p2, {"age": 25.0, "hand": "R"})
+                p1_is_lefty = 1 if b1["hand"] == 'L' else 0
+                p2_is_lefty = 1 if b2["hand"] == 'L' else 0
+
+                features = np.array([[r1_base - r2_base, r1_surf - r2_surf, h2h_adv, form_adv, b1["age"] - b2["age"], p1_is_lefty - p2_is_lefty]])
+                probabilities = ai_model.predict_proba(features)[0]
+                p1_win_prob = probabilities[1] 
+                
+                st.session_state.match_result = {
+                    "p1": p1, "p2": p2, "p1_win_prob": p1_win_prob
+                }
+
+# --- 10. DRAW THE RESULT ---
+if st.session_state.match_result:
+    res = st.session_state.match_result
+    st.subheader("Prediction")
+    if res["p1_win_prob"] > 0.5:
+        st.success(f"**Predicted Winner:** {res['p1']}")
+        st.metric(label=f"{res['p1']} Win Probability", value=f"{res['p1_win_prob'] * 100:.1f}%")
+    else:
+        st.success(f"**Predicted Winner:** {res['p2']}")
+        st.metric(label=f"{res['p2']} Win Probability", value=f"{(1 - res['p1_win_prob']) * 100:.1f}%")
