@@ -108,11 +108,11 @@ except Exception as e:
 # --- 7. THE PAYWALL POPUP (DIALOG) ---
 @st.dialog("Prediction Limit Reached")
 def show_paywall():
-    st.warning("You have run out of free predictions.")
-    st.write("Join the Elite Predictor for $5/month to access unlimited daily math-backed insights.")
+    st.warning("You have run out of predictions.")
+    st.write("Join the Elite Predictor for $5/month to access unlimited predictions.")
     
     if st.session_state.user is None:
-        st.error("Please use the sidebar to Sign Up for a free account to unlock 50 daily predictions!")
+        st.error("Sign Up for a free account to unlock more predictions")
     else:
         if stripe_configured:
             try:
@@ -135,7 +135,7 @@ def show_paywall():
                     success_url=DOMAIN + '/?success=true&session_id={CHECKOUT_SESSION_ID}',
                     cancel_url=DOMAIN + '/?canceled=true',
                 )
-                st.link_button("💳 Pay with Stripe to Upgrade", checkout_session.url, type="primary", use_container_width=True)
+                st.link_button("Pay with Stripe to Upgrade", checkout_session.url, type="primary", use_container_width=True)
             except Exception as e:
                 st.error(f"Error connecting to Stripe: {e}")
         else:
@@ -151,7 +151,7 @@ with st.sidebar:
         st.write("Create a free account to track more matches!")
         
         # 1. Google Sign-In Button
-        if st.button("🌐 Continue with Google", use_container_width=True):
+        if st.button("Continue with Google", use_container_width=True):
             res = supabase.auth.sign_in_with_oauth({
                 "provider": "google",
                 "options": {"redirect_to": DOMAIN}
