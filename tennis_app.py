@@ -13,7 +13,7 @@ class EloModel:
     def get_rating(self, player, surface=None):
         if surface: return self.surface_ratings.get(surface, {}).get(player, 1500)
         return self.ratings.get(player, 1500)
-    def update(self, p1, p2, p1_win, surface, tourney_level):
+    def update(self, p1, p2, p1_win, surface, tourney_level='A'):
         pass # Only needed for loading compatibility
 
 @st.cache_resource
@@ -33,7 +33,7 @@ except Exception as e:
     st.stop()
 
 st.title("Elite Tennis Predictor")
-st.write("Welcome to the advanced AI prediction engine.")
+st.write("Welcome to the AI prediction engine.")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -52,6 +52,7 @@ if st.button("Predict Match Outcome", use_container_width=True):
     else:
         with st.spinner("Calculating Probabilities..."):
             
+            # --- ELO & H2H MATH ---
             r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
             r1_surf, r2_surf = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
             
@@ -65,7 +66,7 @@ if st.button("Predict Match Outcome", use_container_width=True):
             form_2_surf = (sum(p2_recent) / len(p2_recent)) * 100 if p2_recent else 50.0
             form_adv = ((form_1_surf / 100) - (form_2_surf / 100)) * 3.0
             
-            # --- SAFE BIO LOOKUPS (PREVENTS KEYERRORS) ---
+            # --- SAFE BIO LOOKUPS ---
             b1 = player_bio.get(p1, {})
             b2 = player_bio.get(p2, {})
             
@@ -81,18 +82,34 @@ if st.button("Predict Match Outcome", use_container_width=True):
             rank1 = b1.get("rank", 500.0)
             rank2 = b2.get("rank", 500.0)
 
-            # --- 8 FEATURE ARRAY ---
-            features = np.array([[
-                r1_base - r2_base, 
-                r1_surf - r2_surf, 
-                h2h_adv, 
-                form_adv, 
-                age1 - age2, 
-                p1_is_lefty - p2_is_lefty,
-                ht1 - ht2, 
-                rank2 - rank1
-            ]])
+            # --- DYNAMIC FEATURE DETECTION ---
+            # Automatically detects if the loaded model expects 6 or 8 features
+            expected_features = getattr(ai_model, "n_features_in_", 6)
+
+            if expected_features == 6:
+                # Fallback for old 6-feature model
+                features = np.array([[
+                    r1_base - r2_base, 
+                    r1_surf - r2_surf, 
+                    h2h_adv, 
+                    form_adv, 
+                    age1 - age2, 
+                    p1_is_lefty - p2_is_lefty
+                ]])
+            else:
+                # Upgraded 8-feature array
+                features = np.array([[
+                    r1_base - r2_base, 
+                    r1_surf - r2_surf, 
+                    h2h_adv, 
+                    form_adv, 
+                    age1 - age2, 
+                    p1_is_lefty - p2_is_lefty,
+                    ht1 - ht2, 
+                    rank2 - rank1
+                ]])
             
+            # --- PREDICTION ---
             probabilities = ai_model.predict_proba(features)[0]
             p1_win_prob = probabilities[1] 
             
