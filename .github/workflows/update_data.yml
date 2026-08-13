@@ -1,0 +1,39 @@
+name: Auto Update Tennis AI
+
+on:
+  schedule:
+    # This runs at 8:00 AM UTC (which is early morning in the US) every Monday
+    - cron: '0 8 * * 1'
+  workflow_dispatch: # This adds a manual "Run workflow" button for you to test it
+
+permissions:
+  contents: write # This gives the robot permission to save the file back to your repo
+
+jobs:
+  build-and-update:
+    runs-on: ubuntu-latest # GitHub gives you a free Linux machine
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install pandas numpy scikit-learn joblib requests
+          
+      - name: Run data updater script
+        run: python data_updater.py
+        
+      - name: Commit and push changes
+        # If the script changes the file, automatically commit and push it
+        run: |
+          git config --local user.name "GitHub Action"
+          git config --local user.email "action@github.com"
+          git add tennis_model_artifacts.pkl
+          git commit -m "Automated model data update" || echo "No new data to commit"
+          git push
