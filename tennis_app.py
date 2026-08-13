@@ -5,7 +5,7 @@ import joblib
 
 st.set_page_config(page_title="Elite Tennis Predictor", layout="centered")
 
-# --- MATCH THE NEW ELO CLASS ---
+# --- MATCH THE ELO CLASS ---
 class EloModel:
     def __init__(self):
         self.ratings = {}
@@ -14,7 +14,7 @@ class EloModel:
         if surface: return self.surface_ratings.get(surface, {}).get(player, 1500)
         return self.ratings.get(player, 1500)
     def update(self, p1, p2, p1_win, surface, tourney_level):
-        pass # We only need this here to satisfy joblib's loading requirements
+        pass # Only needed for loading compatibility
 
 @st.cache_resource
 def load_model_artifacts():
@@ -65,11 +65,21 @@ if st.button("Predict Match Outcome", use_container_width=True):
             form_2_surf = (sum(p2_recent) / len(p2_recent)) * 100 if p2_recent else 50.0
             form_adv = ((form_1_surf / 100) - (form_2_surf / 100)) * 3.0
             
-            # --- GET NEW BIO STATS ---
-            b1 = player_bio.get(p1, {"age": 25.0, "hand": "R", "height": 185.0, "rank": 500.0})
-            b2 = player_bio.get(p2, {"age": 25.0, "hand": "R", "height": 185.0, "rank": 500.0})
-            p1_is_lefty = 1 if b1["hand"] == 'L' else 0
-            p2_is_lefty = 1 if b2["hand"] == 'L' else 0
+            # --- SAFE BIO LOOKUPS (PREVENTS KEYERRORS) ---
+            b1 = player_bio.get(p1, {})
+            b2 = player_bio.get(p2, {})
+            
+            age1 = b1.get("age", 25.0)
+            age2 = b2.get("age", 25.0)
+            
+            p1_is_lefty = 1 if b1.get("hand") == 'L' else 0
+            p2_is_lefty = 1 if b2.get("hand") == 'L' else 0
+
+            ht1 = b1.get("height", 185.0)
+            ht2 = b2.get("height", 185.0)
+
+            rank1 = b1.get("rank", 500.0)
+            rank2 = b2.get("rank", 500.0)
 
             # --- 8 FEATURE ARRAY ---
             features = np.array([[
@@ -77,10 +87,10 @@ if st.button("Predict Match Outcome", use_container_width=True):
                 r1_surf - r2_surf, 
                 h2h_adv, 
                 form_adv, 
-                b1["age"] - b2["age"], 
+                age1 - age2, 
                 p1_is_lefty - p2_is_lefty,
-                b1["height"] - b2["height"], 
-                b2["rank"] - b1["rank"]  # Positive is good (e.g., Rank 50 - Rank 1 = +49 advantage for P1)
+                ht1 - ht2, 
+                rank2 - rank1
             ]])
             
             probabilities = ai_model.predict_proba(features)[0]
