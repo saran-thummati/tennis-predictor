@@ -34,6 +34,6 @@ jobs:
         run: |
           git config --local user.name "GitHub Action"
           git config --local user.email "action@github.com"
-          git add tennis_model_artifacts.pkl
+          git add -f tennis_model_artifacts.pkl
           git commit -m "Automated model data update" || echo "No new data to commit"
           git push
