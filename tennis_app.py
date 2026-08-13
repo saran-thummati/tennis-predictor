@@ -3,10 +3,19 @@ import pandas as pd
 import numpy as np
 import joblib
 
-# --- 1. PAGE CONFIGURATION ---
 st.set_page_config(page_title="Elite Tennis Predictor", layout="centered")
 
-# --- 2. LOAD MODELS ---
+# --- MATCH THE NEW ELO CLASS ---
+class EloModel:
+    def __init__(self):
+        self.ratings = {}
+        self.surface_ratings = {}
+    def get_rating(self, player, surface=None):
+        if surface: return self.surface_ratings.get(surface, {}).get(player, 1500)
+        return self.ratings.get(player, 1500)
+    def update(self, p1, p2, p1_win, surface, tourney_level):
+        pass # We only need this here to satisfy joblib's loading requirements
+
 @st.cache_resource
 def load_model_artifacts():
     return joblib.load("tennis_model_artifacts.pkl")
@@ -23,9 +32,8 @@ except Exception as e:
     st.error("Could not load model artifacts. Check your files.")
     st.stop()
 
-# --- 3. MAIN PREDICTOR UI ---
 st.title("Elite Tennis Predictor")
-st.write("Welcome to the pure AI prediction engine.")
+st.write("Welcome to the advanced AI prediction engine.")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -44,9 +52,9 @@ if st.button("Predict Match Outcome", use_container_width=True):
     else:
         with st.spinner("Calculating Probabilities..."):
             
-            # --- THE MATH ---
             r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
             r1_surf, r2_surf = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
+            
             p1_wins_h2h = h2h_tracker.get(f"{p1}_vs_{p2}", 0)
             p2_wins_h2h = h2h_tracker.get(f"{p2}_vs_{p1}", 0)
             h2h_adv = p1_wins_h2h - p2_wins_h2h
@@ -55,20 +63,29 @@ if st.button("Predict Match Outcome", use_container_width=True):
             p2_recent = surface_form.get(p2, {}).get(surface, [0.5])
             form_1_surf = (sum(p1_recent) / len(p1_recent)) * 100 if p1_recent else 50.0
             form_2_surf = (sum(p2_recent) / len(p2_recent)) * 100 if p2_recent else 50.0
+            form_adv = ((form_1_surf / 100) - (form_2_surf / 100)) * 3.0
             
-            momentum_multiplier = 3.0 
-            form_adv = ((form_1_surf / 100) - (form_2_surf / 100)) * momentum_multiplier
-            
-            b1 = player_bio.get(p1, {"age": 25.0, "hand": "R"})
-            b2 = player_bio.get(p2, {"age": 25.0, "hand": "R"})
+            # --- GET NEW BIO STATS ---
+            b1 = player_bio.get(p1, {"age": 25.0, "hand": "R", "height": 185.0, "rank": 500.0})
+            b2 = player_bio.get(p2, {"age": 25.0, "hand": "R", "height": 185.0, "rank": 500.0})
             p1_is_lefty = 1 if b1["hand"] == 'L' else 0
             p2_is_lefty = 1 if b2["hand"] == 'L' else 0
 
-            features = np.array([[r1_base - r2_base, r1_surf - r2_surf, h2h_adv, form_adv, b1["age"] - b2["age"], p1_is_lefty - p2_is_lefty]])
+            # --- 8 FEATURE ARRAY ---
+            features = np.array([[
+                r1_base - r2_base, 
+                r1_surf - r2_surf, 
+                h2h_adv, 
+                form_adv, 
+                b1["age"] - b2["age"], 
+                p1_is_lefty - p2_is_lefty,
+                b1["height"] - b2["height"], 
+                b2["rank"] - b1["rank"]  # Positive is good (e.g., Rank 50 - Rank 1 = +49 advantage for P1)
+            ]])
+            
             probabilities = ai_model.predict_proba(features)[0]
             p1_win_prob = probabilities[1] 
             
-            # --- DRAW THE RESULT ---
             st.subheader("Prediction")
             if p1_win_prob > 0.5:
                 st.success(f"**Predicted Winner:** {p1}")
