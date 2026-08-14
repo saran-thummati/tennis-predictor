@@ -1,5 +1,8 @@
 streamlit
 pandas
 numpy
+scikit-learn
 joblib
-scikit-learn==1.8.0
+requests
+xgboost
+streamlit-analytics
