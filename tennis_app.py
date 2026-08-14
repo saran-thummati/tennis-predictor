@@ -21,17 +21,16 @@ def load_model_artifacts():
     return joblib.load("tennis_model_artifacts.pkl")
 
 try:
-   artifacts = load_model_artifacts()
+    artifacts = load_model_artifacts()
     all_players = artifacts["all_players"]
     model_elo = artifacts["model_elo"]
     ai_model = artifacts["ai_model"]
     h2h_tracker = artifacts["h2h_tracker"]
     surface_form = artifacts.get("surface_form", {}) 
     player_bio = artifacts["player_bio"]
-
 except Exception as e:
-  st.error(f"❌ Model Load Error: {e}")
-    st.exception(e) # This will print the exact technical crash on the screen!
+    st.error(f"❌ Model Load Error: {e}")
+    st.exception(e)
     st.stop()
 
 with streamlit_analytics.track():
@@ -74,7 +73,7 @@ with streamlit_analytics.track():
                 ht1, ht2 = b1.get("height", 185.0), b2.get("height", 185.0)
                 rank1, rank2 = b1.get("rank", 500.0), b2.get("rank", 500.0)
                 
-                # NEW: Fatigue & Rest Lookups
+                # Fatigue & Rest Lookups
                 fat1, fat2 = b1.get("fatigue", 0), b2.get("fatigue", 0)
                 rest1, rest2 = b1.get("rest", 7), b2.get("rest", 7)
 
@@ -88,8 +87,8 @@ with streamlit_analytics.track():
                     p1_is_lefty - p2_is_lefty,
                     ht1 - ht2, 
                     rank2 - rank1,
-                    fat1 - fat2,  # Fatigue difference
-                    rest1 - rest2 # Rest days difference
+                    fat1 - fat2,  
+                    rest1 - rest2 
                 ]])
                 
                 # PREDICTION
