@@ -5,4 +5,6 @@ scikit-learn
 joblib
 requests
 xgboost
+lightgbm
+optuna
 streamlit-analytics
