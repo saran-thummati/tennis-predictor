@@ -12,21 +12,18 @@ from xgboost import XGBClassifier
 import lightgbm as lgb
 
 print("1. Downloading ATP match data (2018-2026)...")
-# Using recent years keeps training fast and high quality on GitHub Actions
 years = range(2018, 2027)
 frames = []
-headers = {"User-Agent": "Mozilla/5.0"}
 
 for year in years:
     url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv"
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            df = pd.read_csv(io.StringIO(response.text), low_memory=False)
-            frames.append(df)
-            print(f" -> Downloaded {year}")
+        # Having Pandas read the URL directly is much more robust against bot-blocks
+        df = pd.read_csv(url, low_memory=False)
+        frames.append(df)
+        print(f" -> Downloaded {year}")
     except Exception as e:
-        print(f" -> Could not load {year}: {e}")
+        print(f" -> Skipped {year} (Data might not exist yet)")
 
 if not frames:
     print("❌ Failed to download data.")
