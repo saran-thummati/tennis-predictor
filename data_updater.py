@@ -1,9 +1,9 @@
-import io
 import joblib
 import numpy as np
 import pandas as pd
 import os
 import time
+import subprocess
 from datetime import datetime
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
@@ -13,11 +13,10 @@ from xgboost import XGBClassifier
 import lightgbm as lgb
 
 print("1. Cloning ATP match data directly via Git...")
-# By cloning the repository directly, we completely bypass GitHub's web-scraping WAF blockers
 if not os.path.exists("tennis_atp"):
     print(" -> Downloading repository...")
-    os.system("git clone https://github.com/JeffSackmann/tennis_atp.git")
-    time.sleep(2) # Give the OS a second to finish writing the files to disk
+    subprocess.run(["git", "clone", "https://github.com/JeffSackmann/tennis_atp.git"], check=False)
+    time.sleep(2)
 
 years = range(2018, 2027)
 frames = []
@@ -44,7 +43,6 @@ df = df[~df["score"].str.contains("W/O|RET|DEF", na=False)]
 
 print(f" -> Total valid matches loaded: {len(df)}")
 
-# --- ELO RATING ENGINE ---
 class EloModel:
     def __init__(self):
         self.ratings = {}
@@ -57,7 +55,6 @@ class EloModel:
 
     def update(self, p1, p2, p1_win, surface, tourney_level):
         k = 48 if tourney_level == "G" else 40 if tourney_level == "M" else 32
-        
         r1, r2 = self.get_rating(p1), self.get_rating(p2)
         exp1 = 1 / (1 + 10 ** ((r2 - r1) / 400))
         self.ratings[p1] = r1 + k * (p1_win - exp1)
@@ -84,13 +81,11 @@ for _, row in df.iterrows():
     p1, p2 = row["winner_name"], row["loser_name"]
     surface, tourney_level = row["surface"], row["tourney_level"]
     
-    # Date Parsing for Schedule Density & Fatigue
     try:
         match_date = datetime.strptime(str(int(row["tourney_date"])), "%Y%m%d")
     except Exception:
         match_date = datetime.now()
 
-    # Calculate Fatigue (Matches in last 7 days) & Rest Days
     recent_p1 = [d for d in player_recent_matches.get(p1, []) if (match_date - d).days <= 7]
     fatigue_p1 = len(recent_p1)
     rest_p1 = min((match_date - player_last_match.get(p1, match_date - pd.Timedelta(days=30))).days, 30)
@@ -99,7 +94,6 @@ for _, row in df.iterrows():
     fatigue_p2 = len(recent_p2)
     rest_p2 = min((match_date - player_last_match.get(p2, match_date - pd.Timedelta(days=30))).days, 30)
 
-    # Bio Features
     a1 = row.get("winner_age", 25.0) if not pd.isna(row.get("winner_age")) else 25.0
     a2 = row.get("loser_age", 25.0) if not pd.isna(row.get("loser_age")) else 25.0
     h1 = 1 if row.get("winner_hand") == "L" else 0
@@ -112,7 +106,6 @@ for _, row in df.iterrows():
     player_bio[p1] = {"age": a1, "hand": "L" if h1 else "R", "height": ht1, "rank": rank1, "fatigue": fatigue_p1, "rest": rest_p1}
     player_bio[p2] = {"age": a2, "hand": "L" if h2 else "R", "height": ht2, "rank": rank2, "fatigue": fatigue_p2, "rest": rest_p2}
 
-    # Elo & H2H Lookups
     r1_b, r2_b = model_elo.get_rating(p1), model_elo.get_rating(p2)
     r1_s, r2_s = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
     h2h_adv = h2h_tracker.get(f"{p1}_vs_{p2}", 0) - h2h_tracker.get(f"{p2}_vs_{p1}", 0)
@@ -121,15 +114,12 @@ for _, row in df.iterrows():
     f2 = np.mean(surface_form.get(p2, {}).get(surface, [0.5])) * 100
     form_adv = ((f1 / 100) - (f2 / 100)) * 3.0
 
-    # P1 Win Perspective (10 features)
     X.append([r1_b - r2_b, r1_s - r2_s, h2h_adv, form_adv, a1 - a2, h1 - h2, ht1 - ht2, rank2 - rank1, fatigue_p1 - fatigue_p2, rest_p1 - rest_p2])
     y.append(1)
 
-    # P2 Win Perspective (Inverted)
     X.append([r2_b - r1_b, r2_s - r1_s, -h2h_adv, -form_adv, a2 - a1, h2 - h1, ht2 - ht1, rank1 - rank2, fatigue_p2 - fatigue_p1, rest_p2 - rest_p1])
     y.append(0)
 
-    # Update Trackers
     model_elo.update(p1, p2, 1, surface, tourney_level)
     h2h_tracker[f"{p1}_vs_{p2}"] = h2h_tracker.get(f"{p1}_vs_{p2}", 0) + 1
 
@@ -153,7 +143,6 @@ X = np.array(X)
 y = np.array(y)
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# Multi-model Ensemble Pipeline
 estimators = [
     ('xgb', XGBClassifier(n_estimators=100, max_depth=5, learning_rate=0.05, eval_metric='logloss', random_state=42)),
     ('lgb', lgb.LGBMClassifier(n_estimators=100, max_depth=5, learning_rate=0.05, verbose=-1, random_state=42)),
@@ -168,7 +157,6 @@ ensemble_model = StackingClassifier(
 
 ensemble_model.fit(X_train, y_train)
 
-# Evaluate model accuracy
 y_pred = ensemble_model.predict(X_test)
 acc = accuracy_score(y_test, y_pred)
 print(f" -> 🏆 Ensemble Real-World Accuracy: {acc * 100:.2f}%\n")
