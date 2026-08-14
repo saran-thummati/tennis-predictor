@@ -1,9 +1,9 @@
+import urllib.request
+import zipfile
+import os
 import joblib
 import numpy as np
 import pandas as pd
-import os
-import time
-import subprocess
 from datetime import datetime
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
@@ -12,17 +12,25 @@ from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
 import lightgbm as lgb
 
-print("1. Cloning ATP match data directly via Git...")
-if not os.path.exists("tennis_atp"):
-    print(" -> Downloading repository...")
-    subprocess.run(["git", "clone", "https://github.com/JeffSackmann/tennis_atp.git"], check=False)
-    time.sleep(2)
+print("1. Downloading Data via Direct ZIP Extraction...")
+zip_url = "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/master.zip"
+zip_path = "tennis_data.zip"
+
+try:
+    urllib.request.urlretrieve(zip_url, zip_path)
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(".")
+    print(" -> ZIP successfully downloaded and extracted!")
+except Exception as e:
+    print(f"❌ Failed to download ZIP: {e}")
+    exit(1)
 
 years = range(2018, 2027)
 frames = []
 
+# When GitHub zips a repo, it extracts it into a folder named 'repo-branch'
 for year in years:
-    file_path = f"tennis_atp/atp_matches_{year}.csv"
+    file_path = f"tennis_atp-master/atp_matches_{year}.csv"
     if os.path.exists(file_path):
         try:
             df = pd.read_csv(file_path, low_memory=False)
@@ -31,10 +39,10 @@ for year in years:
         except Exception as e:
             print(f" -> Failed to read {year}: {e}")
     else:
-        print(f" -> Skipped {year} (File not found in repo)")
+        print(f" -> Skipped {year} (File not found in ZIP)")
 
 if not frames:
-    print("❌ Failed to load data.")
+    print("❌ Failed to load any data.")
     exit(1)
 
 df = pd.concat(frames).sort_values("tourney_date").reset_index(drop=True)
