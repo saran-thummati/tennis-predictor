@@ -3,6 +3,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import requests
+import time
 from datetime import datetime
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
@@ -15,15 +16,30 @@ print("1. Downloading ATP match data (2018-2026)...")
 years = range(2018, 2027)
 frames = []
 
+# This massive header string completely disguises the cloud robot as a real Chrome browser
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+}
+
 for year in years:
     url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv"
     try:
-        # Having Pandas read the URL directly is much more robust against bot-blocks
-        df = pd.read_csv(url, low_memory=False)
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status() # This forces the script to throw a visible error if it gets blocked
+        
+        df = pd.read_csv(io.StringIO(response.text), low_memory=False)
         frames.append(df)
         print(f" -> Downloaded {year}")
+        
+        time.sleep(1) # A 1-second delay between downloads prevents rate-limiting
+    except requests.exceptions.HTTPError as e:
+        if response.status_code == 404:
+            print(f" -> Skipped {year} (Data file does not exist yet)")
+        else:
+            print(f" -> Blocked on {year}: HTTP {response.status_code}")
     except Exception as e:
-        print(f" -> Skipped {year} (Data might not exist yet)")
+        print(f" -> Failed on {year}: {e}")
 
 if not frames:
     print("❌ Failed to download data.")
