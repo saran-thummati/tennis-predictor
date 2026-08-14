@@ -21,15 +21,17 @@ def load_model_artifacts():
     return joblib.load("tennis_model_artifacts.pkl")
 
 try:
-    artifacts = load_model_artifacts()
+   artifacts = load_model_artifacts()
     all_players = artifacts["all_players"]
     model_elo = artifacts["model_elo"]
     ai_model = artifacts["ai_model"]
     h2h_tracker = artifacts["h2h_tracker"]
     surface_form = artifacts.get("surface_form", {}) 
     player_bio = artifacts["player_bio"]
+
 except Exception as e:
-    st.error("Could not load model artifacts. Check your files.")
+  st.error(f"❌ Model Load Error: {e}")
+    st.exception(e) # This will print the exact technical crash on the screen!
     st.stop()
 
 with streamlit_analytics.track():
