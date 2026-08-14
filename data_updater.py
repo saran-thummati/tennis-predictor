@@ -2,7 +2,7 @@ import io
 import joblib
 import numpy as np
 import pandas as pd
-import requests
+import os
 import time
 from datetime import datetime
 from sklearn.metrics import accuracy_score
@@ -12,37 +12,30 @@ from sklearn.linear_model import LogisticRegression
 from xgboost import XGBClassifier
 import lightgbm as lgb
 
-print("1. Downloading ATP match data (2018-2026)...")
+print("1. Cloning ATP match data directly via Git...")
+# By cloning the repository directly, we completely bypass GitHub's web-scraping WAF blockers
+if not os.path.exists("tennis_atp"):
+    print(" -> Downloading repository...")
+    os.system("git clone https://github.com/JeffSackmann/tennis_atp.git")
+    time.sleep(2) # Give the OS a second to finish writing the files to disk
+
 years = range(2018, 2027)
 frames = []
 
-# This massive header string completely disguises the cloud robot as a real Chrome browser
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-}
-
 for year in years:
-    url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv"
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status() # This forces the script to throw a visible error if it gets blocked
-        
-        df = pd.read_csv(io.StringIO(response.text), low_memory=False)
-        frames.append(df)
-        print(f" -> Downloaded {year}")
-        
-        time.sleep(1) # A 1-second delay between downloads prevents rate-limiting
-    except requests.exceptions.HTTPError as e:
-        if response.status_code == 404:
-            print(f" -> Skipped {year} (Data file does not exist yet)")
-        else:
-            print(f" -> Blocked on {year}: HTTP {response.status_code}")
-    except Exception as e:
-        print(f" -> Failed on {year}: {e}")
+    file_path = f"tennis_atp/atp_matches_{year}.csv"
+    if os.path.exists(file_path):
+        try:
+            df = pd.read_csv(file_path, low_memory=False)
+            frames.append(df)
+            print(f" -> Successfully loaded {year}")
+        except Exception as e:
+            print(f" -> Failed to read {year}: {e}")
+    else:
+        print(f" -> Skipped {year} (File not found in repo)")
 
 if not frames:
-    print("❌ Failed to download data.")
+    print("❌ Failed to load data.")
     exit(1)
 
 df = pd.concat(frames).sort_values("tourney_date").reset_index(drop=True)
