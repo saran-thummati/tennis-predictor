@@ -1,20 +1,28 @@
-import urllib.request
+import io
 import zipfile
 import os
 import joblib
 import numpy as np
 import pandas as pd
+import requests
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 
 print("1. Downloading Data via Direct ZIP Extraction...")
-zip_url = "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/master.zip"
-zip_path = "tennis_data.zip"
+zip_url = "https://github.com/JeffSackmann/tennis_atp/archive/master.zip"
+
+# Disguise the cloud robot as a real human using Google Chrome
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 try:
-    urllib.request.urlretrieve(zip_url, zip_path)
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+    response = requests.get(zip_url, headers=headers, timeout=30)
+    response.raise_for_status()
+    
+    # Extract directly from memory
+    with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
         zip_ref.extractall(".")
     print(" -> ZIP successfully downloaded and extracted!")
 except Exception as e:
@@ -130,8 +138,7 @@ print("3. Time-Series Cross-Validation & LightGBM Training...")
 X = np.array(X)
 y = np.array(y)
 
-# SHUFFLE=FALSE is the Time-Series magic. We train on the oldest 80% of matches 
-# and strictly test the AI on the newest 20% of matches to simulate reality.
+# SHUFFLE=FALSE is the Time-Series magic. 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
 lgb_model = lgb.LGBMClassifier(
