@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 
 print("1. Downloading Data via Direct ZIP Extraction...")
-zip_url = "https://github.com/JeffSackmann/tennis_atp/archive/master.zip"
+zip_url = "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/master.zip"
 
 # Disguise the cloud robot as a real human using Google Chrome
 headers = {
