@@ -23,7 +23,7 @@ jobs:
           
       - name: Install dependencies
         run: |
-          pip install pandas numpy scikit-learn joblib requests
+          pip install pandas numpy scikit-learn joblib requests lightgdm
           
       - name: Run data updater script
         run: python data_updater.py
