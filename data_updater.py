@@ -1,6 +1,5 @@
 import io
 import zipfile
-import os
 import joblib
 import numpy as np
 import pandas as pd
@@ -10,41 +9,52 @@ from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 
 print("1. Downloading Data via Direct ZIP Extraction...")
-zip_url = "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/master.zip"
 
-# Disguise the cloud robot as a real human using Google Chrome
+# GitHub recently deprecated short URLs AND many repos switched to 'main'.
+# This list ensures the robot checks every possible valid path.
+urls_to_try = [
+    "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/master.zip",
+    "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/main.zip"
+]
+
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-try:
-    response = requests.get(zip_url, headers=headers, timeout=30)
-    response.raise_for_status()
-    
-    # Extract directly from memory
-    with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
-        zip_ref.extractall(".")
-    print(" -> ZIP successfully downloaded and extracted!")
-except Exception as e:
-    print(f"❌ Failed to download ZIP: {e}")
+zip_content = None
+for url in urls_to_try:
+    print(f" -> Attempting download from: {url}")
+    response = requests.get(url, headers=headers, timeout=30)
+    if response.status_code == 200:
+        zip_content = response.content
+        print(" -> ZIP successfully downloaded!")
+        break
+    else:
+        print(f" -> Failed (HTTP {response.status_code})")
+
+if not zip_content:
+    print("❌ Failed to download ZIP from all branch URLs.")
     exit(1)
 
-# We use 2015-2026 data to give the model a deep historical baseline
 years = range(2015, 2027)
 frames = []
 
-for year in years:
-    file_path = f"tennis_atp-master/atp_matches_{year}.csv"
-    if os.path.exists(file_path):
-        try:
-            df = pd.read_csv(file_path, low_memory=False)
-            frames.append(df)
-            print(f" -> Successfully loaded {year}")
-        except Exception as e:
+# Extract and read directly from memory (no folder name guessing needed)
+with zipfile.ZipFile(io.BytesIO(zip_content)) as zip_ref:
+    for year in years:
+        # Search for the exact CSV file inside the zip regardless of what the root folder is named
+        match_files = [name for name in zip_ref.namelist() if name.endswith(f"atp_matches_{year}.csv")]
+        
+        if match_files:
+            with zip_ref.open(match_files[0]) as f:
+                df = pd.read_csv(f, low_memory=False)
+                frames.append(df)
+                print(f" -> Successfully loaded {year}")
+        else:
             pass
 
 if not frames:
-    print("❌ Failed to load any data.")
+    print("❌ Failed to load any data from the ZIP.")
     exit(1)
 
 # Sorting by date is CRITICAL for Time-Series Cross Validation
