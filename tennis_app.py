@@ -5,14 +5,13 @@ import joblib
 
 st.set_page_config(page_title="Elite Tennis Predictor", layout="centered")
 
-# --- MATCH THE ELO CLASS ---
 class EloModel:
     def __init__(self):
         self.ratings = {}
         self.surface_ratings = {}
     def get_rating(self, player, surface=None):
-        if surface: return self.surface_ratings.get(surface, {}).get(player, 1500)
-        return self.ratings.get(player, 1500)
+        if surface: return self.surface_ratings.get(surface, {}).get(player, 1500.0)
+        return self.ratings.get(player, 1500.0)
     def update(self, p1, p2, p1_win, surface, tourney_level='A'):
         pass 
 
@@ -29,12 +28,11 @@ try:
     surface_form = artifacts.get("surface_form", {}) 
     player_bio = artifacts["player_bio"]
 except Exception as e:
-    st.error(f"❌ Model Load Error: {e}")
-    st.exception(e)
+    st.error("Model version mismatch. Please let GitHub Actions finish running, then click 'Clear Cache' in the top right menu.")
     st.stop()
 
 st.title("Elite Tennis Predictor")
-st.write("Welcome to the AI prediction engine.")
+st.write("Powered by LightGBM and Time-Series Surface Elo")
 st.divider()
 
 col1, col2 = st.columns(2)
@@ -51,7 +49,7 @@ if st.button("Predict Match Outcome", use_container_width=True):
     if p1 == p2:
         st.warning("Please select two different players.")
     else:
-        with st.spinner("Calculating Probabilities..."):
+        with st.spinner("Consulting the Model..."):
             
             # --- ELO & H2H MATH ---
             r1_base, r2_base = model_elo.get_rating(p1), model_elo.get_rating(p2)
@@ -63,9 +61,8 @@ if st.button("Predict Match Outcome", use_container_width=True):
             
             p1_recent = surface_form.get(p1, {}).get(surface, [0.5])
             p2_recent = surface_form.get(p2, {}).get(surface, [0.5])
-            form_1_surf = (sum(p1_recent) / len(p1_recent)) * 100 if p1_recent else 50.0
-            form_2_surf = (sum(p2_recent) / len(p2_recent)) * 100 if p2_recent else 50.0
-            form_adv = ((form_1_surf / 100) - (form_2_surf / 100)) * 3.0
+            form_adv = (((sum(p1_recent) / len(p1_recent)) * 100 if p1_recent else 50.0) / 100 - 
+                        ((sum(p2_recent) / len(p2_recent)) * 100 if p2_recent else 50.0) / 100) * 3.0
             
             # --- BIO LOOKUPS ---
             b1 = player_bio.get(p1, {})
@@ -76,7 +73,7 @@ if st.button("Predict Match Outcome", use_container_width=True):
             ht1, ht2 = b1.get("height", 185.0), b2.get("height", 185.0)
             rank1, rank2 = b1.get("rank", 500.0), b2.get("rank", 500.0)
 
-            # --- 8-FEATURE VECTOR ---
+            # --- PREDICTION ARRAY ---
             features = np.array([[
                 r1_base - r2_base, 
                 r1_surf - r2_surf, 
@@ -88,7 +85,7 @@ if st.button("Predict Match Outcome", use_container_width=True):
                 rank2 - rank1
             ]])
             
-            # --- PREDICTION ---
+            # --- OUTPUT ---
             probabilities = ai_model.predict_proba(features)[0]
             p1_win_prob = probabilities[1] 
             
