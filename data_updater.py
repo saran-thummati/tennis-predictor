@@ -1,25 +1,44 @@
+import io
 import joblib
 import numpy as np
 import pandas as pd
+import requests
 import time
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 
-print("1. Downloading Data via Pandas Directly...")
+print("1. Downloading Data with Human Disguise...")
+
+# Disguise the cloud robot as a real human using Google Chrome
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
 
 years = range(2015, 2027)
 frames = []
 
 for year in years:
-    url = f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv"
-    try:
-        # Pandas handles the download automatically!
-        df = pd.read_csv(url, low_memory=False)
-        frames.append(df)
-        print(f" -> Successfully loaded {year}")
-    except Exception:
-        print(f" -> Skipped {year}")
+    urls = [
+        f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv",
+        f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/main/atp_matches_{year}.csv"
+    ]
+    
+    success = False
+    for url in urls:
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                df = pd.read_csv(io.StringIO(response.text), low_memory=False)
+                frames.append(df)
+                print(f" -> Successfully loaded {year}")
+                success = True
+                break
+        except Exception:
+            pass
+            
+    if not success:
+        print(f" -> Skipped {year} (Data not available)")
         
     time.sleep(1) 
 
