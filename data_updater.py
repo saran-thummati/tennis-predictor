@@ -1,5 +1,6 @@
 import io
 import zipfile
+import os
 import joblib
 import numpy as np
 import pandas as pd
@@ -10,51 +11,39 @@ import lightgbm as lgb
 
 print("1. Downloading Data via Direct ZIP Extraction...")
 
-# GitHub recently deprecated short URLs AND many repos switched to 'main'.
-# This list ensures the robot checks every possible valid path.
-urls_to_try = [
-    "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/master.zip",
-    "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/main.zip"
-]
+# The EXACT, active GitHub URL for the repository
+zip_url = "https://github.com/JeffSackmann/tennis_atp/archive/refs/heads/master.zip"
 
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-zip_content = None
-for url in urls_to_try:
-    print(f" -> Attempting download from: {url}")
-    response = requests.get(url, headers=headers, timeout=30)
-    if response.status_code == 200:
-        zip_content = response.content
-        print(" -> ZIP successfully downloaded!")
-        break
-    else:
-        print(f" -> Failed (HTTP {response.status_code})")
-
-if not zip_content:
-    print("❌ Failed to download ZIP from all branch URLs.")
+try:
+    response = requests.get(zip_url, headers=headers, timeout=30)
+    response.raise_for_status()
+    
+    with zipfile.ZipFile(io.BytesIO(response.content)) as zip_ref:
+        zip_ref.extractall(".")
+    print(" -> ZIP successfully downloaded and extracted!")
+except Exception as e:
+    print(f"❌ Failed to download ZIP: {e}")
     exit(1)
 
 years = range(2015, 2027)
 frames = []
 
-# Extract and read directly from memory (no folder name guessing needed)
-with zipfile.ZipFile(io.BytesIO(zip_content)) as zip_ref:
-    for year in years:
-        # Search for the exact CSV file inside the zip regardless of what the root folder is named
-        match_files = [name for name in zip_ref.namelist() if name.endswith(f"atp_matches_{year}.csv")]
-        
-        if match_files:
-            with zip_ref.open(match_files[0]) as f:
-                df = pd.read_csv(f, low_memory=False)
-                frames.append(df)
-                print(f" -> Successfully loaded {year}")
-        else:
+for year in years:
+    file_path = f"tennis_atp-master/atp_matches_{year}.csv"
+    if os.path.exists(file_path):
+        try:
+            df = pd.read_csv(file_path, low_memory=False)
+            frames.append(df)
+            print(f" -> Successfully loaded {year}")
+        except Exception as e:
             pass
 
 if not frames:
-    print("❌ Failed to load any data from the ZIP.")
+    print("❌ Failed to load any data.")
     exit(1)
 
 # Sorting by date is CRITICAL for Time-Series Cross Validation
@@ -78,13 +67,11 @@ class EloModel:
     def update(self, p1, p2, p1_win, surface, tourney_level):
         k = 48 if tourney_level == "G" else 40 if tourney_level == "M" else 32
         
-        # Update Base Elo
         r1, r2 = self.get_rating(p1), self.get_rating(p2)
         exp1 = 1 / (1 + 10 ** ((r2 - r1) / 400))
         self.ratings[p1] = r1 + k * (p1_win - exp1)
         self.ratings[p2] = r2 + k * ((1 - p1_win) - (1 - exp1))
 
-        # Update Surface-Specific Elo (Clay, Grass, Hard)
         if surface not in self.surface_ratings:
             self.surface_ratings[surface] = {}
         sr1, sr2 = self.get_rating(p1, surface), self.get_rating(p2, surface)
@@ -122,15 +109,12 @@ for _, row in df.iterrows():
     f2 = np.mean(surface_form.get(p2, {}).get(surface, [0.5])) * 100
     form_adv = ((f1 / 100) - (f2 / 100)) * 3.0
 
-    # Player 1 Win Instance
     X.append([r1_b - r2_b, r1_s - r2_s, h2h_adv, form_adv, a1 - a2, h1 - h2, ht1 - ht2, rank2 - rank1])
     y.append(1)
 
-    # Player 2 Win Instance (Inverted)
     X.append([r2_b - r1_b, r2_s - r1_s, -h2h_adv, -form_adv, a2 - a1, h2 - h1, ht2 - ht1, rank1 - rank2])
     y.append(0)
 
-    # Update Trackers for future loops
     model_elo.update(p1, p2, 1, surface, tourney_level)
     h2h_tracker[f"{p1}_vs_{p2}"] = h2h_tracker.get(f"{p1}_vs_{p2}", 0) + 1
 
@@ -148,7 +132,6 @@ print("3. Time-Series Cross-Validation & LightGBM Training...")
 X = np.array(X)
 y = np.array(y)
 
-# SHUFFLE=FALSE is the Time-Series magic. 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
 lgb_model = lgb.LGBMClassifier(
