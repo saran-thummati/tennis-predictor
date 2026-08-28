@@ -1,41 +1,26 @@
 import joblib
 import numpy as np
 import pandas as pd
-import requests
-import io
-import time
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 
-print("1. Loading Data from Active Community Mirror...")
+print("1. Loading Local CSV Files Directly...")
 
 years = range(2015, 2027)
 frames = []
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
-
 for year in years:
-    # Using a reliable public mirror repository that preserves the exact file structure
-    url = f"https://raw.githubusercontent.com/anticipation/tennis_atp/master/atp_matches_{year}.csv"
-    
+    file_path = f"atp_matches_{year}.csv"
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            df = pd.read_csv(io.StringIO(response.text), low_memory=False)
-            frames.append(df)
-            print(f" -> ✅ Successfully loaded {year}")
-        else:
-            print(f" -> ⚠️ Skipped {year} (HTTP {response.status_code})")
-    except Exception as e:
-        print(f" -> ⚠️ Skipped {year}: {e}")
-        
-    time.sleep(0.5)
+        df = pd.read_csv(file_path, low_memory=False)
+        frames.append(df)
+        print(f" -> ✅ Successfully loaded local file for {year}")
+    except Exception:
+        print(f" -> ⚠️ Local file for {year} not found, skipping.")
 
 if not frames:
-    print("❌ CRITICAL: Failed to load any data from the mirror.")
+    print("❌ CRITICAL: No local CSV files found in repository.")
     exit(1)
 
 # Sorting by date is CRITICAL for Time-Series Cross Validation
@@ -153,4 +138,4 @@ joblib.dump({
     "player_bio": player_bio
 }, "tennis_model_artifacts.pkl")
 
-print("✅ Mirror Build Complete!")
+print("✅ V5 Local Build Complete!")
