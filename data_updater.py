@@ -69,13 +69,11 @@ class EloModel:
     def update(self, p1, p2, p1_win, surface, tourney_level):
         k = 48 if tourney_level == "G" else 40 if tourney_level == "M" else 32
         
-        # Update Base Elo
         r1, r2 = self.get_rating(p1), self.get_rating(p2)
         exp1 = 1 / (1 + 10 ** ((r2 - r1) / 400))
         self.ratings[p1] = r1 + k * (p1_win - exp1)
         self.ratings[p2] = r2 + k * ((1 - p1_win) - (1 - exp1))
 
-        # Update Surface-Specific Elo (Clay, Grass, Hard)
         if surface not in self.surface_ratings:
             self.surface_ratings[surface] = {}
         sr1, sr2 = self.get_rating(p1, surface), self.get_rating(p2, surface)
@@ -113,15 +111,12 @@ for _, row in df.iterrows():
     f2 = np.mean(surface_form.get(p2, {}).get(surface, [0.5])) * 100
     form_adv = ((f1 / 100) - (f2 / 100)) * 3.0
 
-    # Player 1 Win Instance
     X.append([r1_b - r2_b, r1_s - r2_s, h2h_adv, form_adv, a1 - a2, h1 - h2, ht1 - ht2, rank2 - rank1])
     y.append(1)
 
-    # Player 2 Win Instance (Inverted)
     X.append([r2_b - r1_b, r2_s - r1_s, -h2h_adv, -form_adv, a2 - a1, h2 - h1, ht2 - ht1, rank1 - rank2])
     y.append(0)
 
-    # Update Trackers for future loops
     model_elo.update(p1, p2, 1, surface, tourney_level)
     h2h_tracker[f"{p1}_vs_{p2}"] = h2h_tracker.get(f"{p1}_vs_{p2}", 0) + 1
 
@@ -139,7 +134,6 @@ print("3. Time-Series Cross-Validation & LightGBM Training...")
 X = np.array(X)
 y = np.array(y)
 
-# SHUFFLE=FALSE is the Time-Series magic. 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
 lgb_model = lgb.LGBMClassifier(
