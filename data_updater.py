@@ -8,42 +8,35 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 
-print("1. Downloading Data with Human Disguise...")
-
-# Disguise the cloud robot as a real human using Google Chrome
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-}
+print("1. Downloading Data via Global CDN (Diagnostic Mode)...")
 
 years = range(2015, 2027)
 frames = []
 
 for year in years:
-    urls = [
-        f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_{year}.csv",
-        f"https://raw.githubusercontent.com/JeffSackmann/tennis_atp/main/atp_matches_{year}.csv"
-    ]
+    # Using JSDelivr to completely bypass GitHub's raw server firewalls
+    url = f"https://cdn.jsdelivr.net/gh/JeffSackmann/tennis_atp@master/atp_matches_{year}.csv"
     
-    success = False
-    for url in urls:
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 200:
-                df = pd.read_csv(io.StringIO(response.text), low_memory=False)
-                frames.append(df)
-                print(f" -> Successfully loaded {year}")
-                success = True
-                break
-        except Exception:
-            pass
-            
-    if not success:
-        print(f" -> Skipped {year} (Data not available)")
+    try:
+        response = requests.get(url, timeout=15)
         
-    time.sleep(1) 
+        # We will now print EXACTLY why it succeeds or fails
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text), low_memory=False)
+            frames.append(df)
+            print(f" -> ✅ Successfully loaded {year}")
+        elif response.status_code == 404:
+            print(f" -> ⚠️ Skipped {year}: File does not exist yet (HTTP 404)")
+        else:
+            print(f" -> ❌ Skipped {year}: Blocked by server (HTTP {response.status_code})")
+            
+    except Exception as e:
+        print(f" -> ❌ Connection Error on {year}: {e}")
+        
+    time.sleep(0.5) 
 
 if not frames:
-    print("❌ CRITICAL: Failed to load any data.")
+    print("❌ CRITICAL: Failed to load ANY data. The repository might be down or private.")
     exit(1)
 
 # Sorting by date is CRITICAL for Time-Series Cross Validation
