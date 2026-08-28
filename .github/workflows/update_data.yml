@@ -13,9 +13,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout repository
         uses: actions/checkout@v4
         
+      - name: Download Tennis Dataset Natively
+        uses: actions/checkout@v4
+        with:
+          repository: JeffSackmann/tennis_atp
+          path: raw_tennis_data
+          
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
