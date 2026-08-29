@@ -1,32 +1,70 @@
+import io
 import joblib
 import numpy as np
 import pandas as pd
+import requests
+import time
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 import lightgbm as lgb
 
-print("1. Loading Local CSV Files Directly...")
+print("1. PIVOT: Downloading Live Data from Tennis-Data.co.uk (2015-2026)...")
 
 years = range(2015, 2027)
 frames = []
 
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 for year in years:
-    file_path = f"atp_matches_{year}.csv"
+    # Hitting the betting industry standard database directly
+    url = f"http://www.tennis-data.co.uk/{year}/{year}.csv"
     try:
-        df = pd.read_csv(file_path, low_memory=False)
-        frames.append(df)
-        print(f" -> ✅ Successfully loaded local file for {year}")
-    except Exception:
-        print(f" -> ⚠️ Local file for {year} not found, skipping.")
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            df = pd.read_csv(io.StringIO(response.text), low_memory=False)
+            
+            # Translate Tennis-Data columns to our AI's expected format
+            df = df.rename(columns={
+                "Winner": "winner_name",
+                "Loser": "loser_name",
+                "Surface": "surface",
+                "Date": "tourney_date",
+                "WRank": "winner_rank",
+                "LRank": "loser_rank",
+                "Series": "tourney_level",
+                "Comment": "score"
+            })
+            frames.append(df)
+            print(f" -> ✅ Successfully loaded {year}")
+        else:
+            print(f" -> ⚠️ Skipped {year} (HTTP {response.status_code})")
+    except Exception as e:
+        print(f" -> ⚠️ Connection error for {year}: {e}")
+        
+    time.sleep(1)
 
 if not frames:
-    print("❌ CRITICAL: No local CSV files found in repository.")
+    print("❌ CRITICAL: Failed to load any data.")
     exit(1)
 
-# Sorting by date is CRITICAL for Time-Series Cross Validation
-df = pd.concat(frames).sort_values("tourney_date").reset_index(drop=True)
-df = df[df["score"].notna()]
-df = df[~df["score"].str.contains("W/O|RET|DEF", na=False)]
+df = pd.concat(frames, ignore_index=True)
+
+# 1. Standardize Dates
+df["tourney_date"] = pd.to_datetime(df["tourney_date"], format="%d/%m/%Y", errors="coerce")
+df = df.sort_values("tourney_date").reset_index(drop=True)
+
+# 2. Filter out Walkovers & Retirements
+if "score" in df.columns:
+    df = df[~df["score"].astype(str).str.contains("Walkover|Retired|Def", case=False, na=False)]
+
+# 3. Standardize Ranks (Some odds sites use text like "N/A" for unranked players)
+df["winner_rank"] = pd.to_numeric(df["winner_rank"], errors="coerce").fillna(500.0)
+df["loser_rank"] = pd.to_numeric(df["loser_rank"], errors="coerce").fillna(500.0)
+
+# 4. Map Tourney Levels for Elo Math
+df["tourney_level"] = df["tourney_level"].map({"Grand Slam": "G", "Masters 1000": "M"}).fillna("A")
 
 print(f" -> Total valid matches loaded: {len(df)}")
 
@@ -63,20 +101,20 @@ player_bio = {}
 X, y = [], []
 
 for _, row in df.iterrows():
-    p1, p2 = row["winner_name"], row["loser_name"]
-    surface, tourney_level = row["surface"], row["tourney_level"]
+    p1 = row.get("winner_name")
+    p2 = row.get("loser_name")
+    surface = row.get("surface", "Hard")
+    tourney_level = row.get("tourney_level", "A")
     
-    a1 = row.get("winner_age", 25.0) if not pd.isna(row.get("winner_age")) else 25.0
-    a2 = row.get("loser_age", 25.0) if not pd.isna(row.get("loser_age")) else 25.0
-    h1 = 1 if row.get("winner_hand") == "L" else 0
-    h2 = 1 if row.get("loser_hand") == "L" else 0
-    ht1 = row.get("winner_ht", 185.0) if not pd.isna(row.get("winner_ht")) else 185.0
-    ht2 = row.get("loser_ht", 185.0) if not pd.isna(row.get("loser_ht")) else 185.0
-    rank1 = row.get("winner_rank", 500.0) if not pd.isna(row.get("winner_rank")) else 500.0
-    rank2 = row.get("loser_rank", 500.0) if not pd.isna(row.get("loser_rank")) else 500.0
+    if pd.isna(p1) or pd.isna(p2):
+        continue
+        
+    rank1 = row.get("winner_rank", 500.0)
+    rank2 = row.get("loser_rank", 500.0)
 
-    player_bio[p1] = {"age": a1, "hand": "L" if h1 else "R", "height": ht1, "rank": rank1}
-    player_bio[p2] = {"age": a2, "hand": "L" if h2 else "R", "height": ht2, "rank": rank2}
+    # Tennis-Data doesn't track age/height, so we normalize to baseline defaults
+    player_bio[p1] = {"age": 25.0, "hand": "R", "height": 185.0, "rank": rank1}
+    player_bio[p2] = {"age": 25.0, "hand": "R", "height": 185.0, "rank": rank2}
 
     r1_b, r2_b = model_elo.get_rating(p1), model_elo.get_rating(p2)
     r1_s, r2_s = model_elo.get_rating(p1, surface), model_elo.get_rating(p2, surface)
@@ -86,10 +124,10 @@ for _, row in df.iterrows():
     f2 = np.mean(surface_form.get(p2, {}).get(surface, [0.5])) * 100
     form_adv = ((f1 / 100) - (f2 / 100)) * 3.0
 
-    X.append([r1_b - r2_b, r1_s - r2_s, h2h_adv, form_adv, a1 - a2, h1 - h2, ht1 - ht2, rank2 - rank1])
+    X.append([r1_b - r2_b, r1_s - r2_s, h2h_adv, form_adv, 0, 0, 0, rank2 - rank1])
     y.append(1)
 
-    X.append([r2_b - r1_b, r2_s - r1_s, -h2h_adv, -form_adv, a2 - a1, h2 - h1, ht2 - ht1, rank1 - rank2])
+    X.append([r2_b - r1_b, r2_s - r1_s, -h2h_adv, -form_adv, 0, 0, 0, rank1 - rank2])
     y.append(0)
 
     model_elo.update(p1, p2, 1, surface, tourney_level)
@@ -138,4 +176,4 @@ joblib.dump({
     "player_bio": player_bio
 }, "tennis_model_artifacts.pkl")
 
-print("✅ V5 Local Build Complete!")
+print("✅ Tennis-Data Build Complete!")
